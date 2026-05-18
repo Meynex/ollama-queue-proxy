@@ -5,7 +5,7 @@
 [![Python versions](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A **smart pool manager for Ollama** — one endpoint that authenticates, queues, routes, caches, and rate-limits across a whole Ollama fleet. Drop-in compatible: one config change in your consumers:
+A **smart pool manager for Ollama** — one endpoint that queues, authenticates, routes, caches, and rate-limits across a whole Ollama fleet. Drop-in compatible: one config change in your consumers:
 
 ```
 OLLAMA_HOST=http://localhost:11435
@@ -36,6 +36,8 @@ Everything else works as before. Streaming, `/api/tags`, `/api/version` — all 
 
 The top r/ollama post of the past year was someone's open Ollama being exploited for weeks. Ollama ships with no authentication. This proxy puts auth in front with per-client keys and priority ceilings — without requiring any changes to consumers like Open WebUI, LangChain, or Continue.dev.
 
+The other reality: in a homelab, one Ollama host quickly becomes a shared resource. Open WebUI, agent swarms, embedding workers, and overnight batch jobs all hit the same GPU. Without per-client policy and a queue, the loudest workload wins. This proxy turns one Ollama into a fairly-scheduled fleet endpoint.
+
 **And the starvation problem:** if you run embeddings at night and interactive chat hits the same server, the chat waits. One header fixes this:
 
 ```
@@ -43,6 +45,18 @@ X-Queue-Priority: high
 ```
 
 Background jobs send `low`. Interactive tools send `normal` or `high`. The queue handles the rest.
+
+---
+
+## How this compares to alternatives
+
+**vs. LiteLLM.** LiteLLM is the enterprise default for multi-provider proxying — OpenAI, Anthropic, Ollama, anything with an HTTP API behind one endpoint with rate limits and cost tracking. If you're running mixed providers, use LiteLLM. ollama-queue-proxy is Ollama-native: it understands what `keep_alive` means, routes around the cold-start cost when a 70B model gets evicted, and treats `/api/embed` and `/api/embeddings` as first-class caching targets. None of that lives in a provider-agnostic tool.
+
+**vs. LoLLMs Hub.** LoLLMs Hub (ParisNeo) also targets Ollama specifically. The differences are the priority queue — `X-Queue-Priority` lets one user's interactive chat preempt their own overnight batch job without separate keys — and per-client concurrency caps, which prevent a batch workload from drowning out interactive use within the same API key.
+
+**vs. DIY Nginx + Redis.** The "rate-limit Ollama with Nginx" pattern is in every blog post. It handles request-rate fine. It can't do model-aware routing, `keep_alive` injection, embedding cache, or priority that survives within a single key — those need application-level awareness of the Ollama protocol, not just HTTP counts.
+
+**vs. [ollama-auth-sidecar](https://github.com/TadMSTR/ollama-auth-sidecar).** That's the right tool when you have one Ollama host and just want auth. This is the right tool when you have a fleet of Ollama hosts and want fleet-level behavior — queuing, routing, caching, and concurrency caps.
 
 ---
 
