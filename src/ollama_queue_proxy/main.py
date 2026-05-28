@@ -279,6 +279,8 @@ async def _enqueue_request(
                 )
 
     enqueue_time = time.monotonic()
+    # get_running_loop() replaces deprecated get_event_loop() — the latter raises
+    # RuntimeError in Python 3.12+ when called outside a running event loop.
     future: asyncio.Future = asyncio.get_running_loop().create_future()
 
     conc_mgr = state.concurrency_manager
@@ -415,8 +417,7 @@ async def proxy_handler(request: Request, path: str):
         )
         # Only wrap successful JSON responses; pass through errors unchanged
         if isinstance(response, JSONResponse) and response.status_code == 200:
-            import json as _json
-            ollama_body = _json.loads(response.body)
+            ollama_body = json.loads(response.body)
             wrapped = wrap_response(ollama_body)
             return JSONResponse(content=wrapped, status_code=200)
         return response

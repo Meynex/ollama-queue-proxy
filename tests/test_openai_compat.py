@@ -33,7 +33,7 @@ def test_api_generate_is_not_compat_path():
 
 
 def test_rewrite_v1_embeddings_to_api_embed():
-    assert rewrite_path("/v1/embeddings") == "api/embed"
+    assert rewrite_path("/v1/embeddings") == "/api/embed"
 
 
 def test_rewrite_non_compat_path_unchanged():
@@ -41,7 +41,7 @@ def test_rewrite_non_compat_path_unchanged():
 
 
 def test_rewrite_without_leading_slash():
-    assert rewrite_path("v1/embeddings") == "api/embed"
+    assert rewrite_path("v1/embeddings") == "/api/embed"
 
 
 # ── response wrapping ─────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ def rewrite_path(path: str) -> str:
     """Rewrite an OpenAI-compat path to the native Ollama equivalent."""
     normalized = "/" + path.lstrip("/")
     if normalized in _OPENAI_COMPAT_PATHS:
-        return "api/embed"
+        return "/api/embed"
     return path
 
 

@@ -228,6 +228,9 @@ async def dispatch_request(
                         async for chunk in r.aiter_bytes():
                             yield chunk
                     finally:
+                        # Close the httpx response explicitly — if the client
+                        # disconnects mid-stream the generator is abandoned and
+                        # GC may never run, leaking the underlying connection.
                         await r.aclose()
 
                 return StreamingResponse(
