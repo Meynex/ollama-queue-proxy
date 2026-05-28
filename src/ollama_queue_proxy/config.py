@@ -273,18 +273,14 @@ def _apply_env_overrides(data: dict, prefix: str = "OQP") -> dict:
         if not key.startswith(prefix + "_"):
             continue
         parts = key[len(prefix) + 1 :].lower().split("__")
+        # List-index overrides (e.g. OQP_OLLAMA__HOSTS__0__URL) are not
+        # supported — skip the entire key if any component is a digit.
+        if any(p.isdigit() for p in parts):
+            continue
         target = data
         for part in parts[:-1]:
-            if part.isdigit():
-                # list index — handled below
-                continue
             target = target.setdefault(part, {})
         leaf = parts[-1]
-        if leaf.isdigit():
-            # Can't safely do list index overrides on arbitrary dicts here.
-            # The most important list override (hosts[0].url) is handled by
-            # full-key matching. Log and skip.
-            continue
         # Attempt type coercion for booleans and integers
         if value.lower() in ("true", "false"):
             target[leaf] = value.lower() == "true"

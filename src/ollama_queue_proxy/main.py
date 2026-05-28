@@ -22,6 +22,7 @@ from .concurrency import ClientConcurrencyManager
 from .config import Config, load_config
 from .hosts import HostManager
 from .middleware import RequestContextMiddleware, get_client_id, parse_priority
+from .openai_compat import is_openai_compat_path, rewrite_path, wrap_response
 from .proxy import dispatch_request, read_body
 from .queue import PriorityQueueManager, QueueFull, QueueItem, QueuePaused, RequestExpired
 from .routes.queue import router as queue_router
@@ -218,6 +219,7 @@ async def _enqueue_request(
     tier: str,
     state: AppState,
     reentries: int = 0,
+    path_override: str | None = None,
 ) -> JSONResponse:
     """
     Buffer the request body, enqueue it, and await dispatch. Used by both the main
@@ -241,7 +243,7 @@ async def _enqueue_request(
 
     # keep_alive injection — runs before cache check so cached responses also reflect
     # the injected value (though for embeddings keep_alive has no effect upstream)
-    path = request.url.path
+    path = path_override if path_override is not None else request.url.path
     ka_cfg = state.config.keep_alive
     if path in _KEEP_ALIVE_PATHS:
         body = _inject_keep_alive(
@@ -277,7 +279,9 @@ async def _enqueue_request(
                 )
 
     enqueue_time = time.monotonic()
-    future: asyncio.Future = asyncio.get_event_loop().create_future()
+    # get_running_loop() replaces deprecated get_event_loop() — the latter raises
+    # RuntimeError in Python 3.12+ when called outside a running event loop.
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
 
     conc_mgr = state.concurrency_manager
 
@@ -294,6 +298,7 @@ async def _enqueue_request(
                 host_manager=state.host_manager,
                 client=state.http_client,
                 routing_table=state.routing_table,
+                path_override=path_override,
             )
         finally:
             if conc_mgr is not None:
@@ -398,6 +403,24 @@ async def proxy_handler(request: Request, path: str):
     # Parse and enforce priority ceiling
     requested_priority = parse_priority(request)
     tier = state.auth_manager.enforce_priority_ceiling(requested_priority, key_cfg)
+
+    # OpenAI-compat path handling: rewrite path before enqueue, wrap response after
+    compat_path = "/" + path
+    if is_openai_compat_path(compat_path):
+        native_path = rewrite_path(compat_path)
+        response = await _enqueue_request(
+            request=request,
+            client_id=client_id,
+            tier=tier,
+            state=state,
+            path_override=native_path,
+        )
+        # Only wrap successful JSON responses; pass through errors unchanged
+        if isinstance(response, JSONResponse) and response.status_code == 200:
+            ollama_body = json.loads(response.body)
+            wrapped = wrap_response(ollama_body)
+            return JSONResponse(content=wrapped, status_code=200)
+        return response
 
     return await _enqueue_request(
         request=request,

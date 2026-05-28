@@ -382,10 +382,28 @@ Returns full queue state, host health, per-client stats, routing decisions, and 
 | `GET /health` | None | Liveness probe — always open |
 | `GET /queue/status` | Token (when enabled) | Full queue, host, client, security state |
 | `GET /metrics` | Token (when enabled) | Prometheus text format |
+| `POST /api/embed` | Token (when enabled) | Native Ollama embedding endpoint |
+| `POST /v1/embeddings` | Token (when enabled) | OpenAI-compat embedding endpoint (see below) |
 | `POST /queue/pause?tier=low` | Management key | Stop accepting requests for tier |
 | `POST /queue/resume?tier=low` | Management key | Resume tier |
 | `POST /queue/drain` | Management key | Wait for queues to empty |
 | `POST /queue/flush?tier=low` | Management key | Drop all pending requests immediately |
+
+### OpenAI-compat embeddings
+
+OQP accepts `POST /v1/embeddings` using the OpenAI Embeddings API format and translates it to Ollama's `/api/embed` internally. The response is wrapped back into OpenAI format before returning. Auth, priority ceiling, and the embedding cache all apply identically to native `/api/embed` requests — the rewrite happens before any of those checks.
+
+This lets clients that use the OpenAI SDK (e.g. Graphiti with `provider: openai`) route through OQP without changing their provider configuration. Point them at OQP's port instead of Ollama's:
+
+```yaml
+# Graphiti config — before
+api_url: http://localhost:11434/v1
+
+# Graphiti config — after (routes through OQP on port 11435)
+api_url: http://localhost:11435/v1
+```
+
+The endpoint is always-on. No config toggle is required.
 
 ### Webhook events
 
