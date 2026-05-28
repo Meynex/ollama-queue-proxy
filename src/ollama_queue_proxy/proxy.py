@@ -119,13 +119,14 @@ async def dispatch_request(
     host_manager: HostManager,
     client: httpx.AsyncClient,
     routing_table: RoutingTable | None = None,
+    path_override: str | None = None,
 ) -> StreamingResponse | JSONResponse:
     """
     Dispatch a buffered request to the appropriate Ollama host with failover.
     Failover only applies before any response bytes are sent to the client.
     """
     request_id = getattr(request.state, "request_id", "unknown")
-    path = request.url.path
+    path = path_override if path_override is not None else request.url.path
     query = request.url.query
     method = request.method
 
@@ -223,8 +224,11 @@ async def dispatch_request(
 
             if is_streaming:
                 async def stream_gen(r=resp):
-                    async for chunk in r.aiter_bytes():
-                        yield chunk
+                    try:
+                        async for chunk in r.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await r.aclose()
 
                 return StreamingResponse(
                     stream_gen(),
