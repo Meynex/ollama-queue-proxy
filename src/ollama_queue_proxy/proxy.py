@@ -34,6 +34,12 @@ _STRIP_REQUEST_HEADERS = {
     "transfer-encoding",
 }
 
+# Headers to strip from upstream before building a non-streaming JSONResponse.
+# JSONResponse re-serialises the body (dropping any trailing newline Ollama appends),
+# so it must compute content-length itself — passing the upstream value causes an
+# off-by-one. transfer-encoding is hop-by-hop and invalid on a buffered response.
+_STRIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding"}
+
 
 def extract_model(body: bytes) -> str | None:
     """Extract the 'model' field from a JSON request body."""
@@ -244,10 +250,14 @@ async def dispatch_request(
                 )
             else:
                 ct = resp.headers.get("content-type", "")
+                passthrough_headers = {
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() not in _STRIP_RESPONSE_HEADERS
+                }
                 return JSONResponse(
                     status_code=resp.status_code,
                     content=resp.json() if ct.startswith("application/json") else None,
-                    headers={**dict(resp.headers), **response_headers},
+                    headers={**passthrough_headers, **response_headers},
                 )
 
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
