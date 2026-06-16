@@ -338,6 +338,16 @@ No config changes required to upgrade.
 
 ---
 
+## Migration from v0.2.x
+
+v0.3.x is fully backward-compatible. No config changes required.
+
+**v0.3.1** fixes a `Content-Length` off-by-one on non-streaming responses. Ollama appends a trailing newline to non-streaming JSON bodies; OQP's `JSONResponse` strips it, but Starlette only auto-computes `content-length` when the header is absent — the stale upstream value was winning, leaving `Content-Length` 1 byte too large. Consumers using httpx were seeing `RemoteProtocolError` on non-streaming calls. Fixed by stripping `content-length` and `transfer-encoding` from upstream headers before building the response.
+
+**v0.3.0** adds the OpenAI-compat `/v1/embeddings` endpoint (documented under [Integration surface](#integration-surface)).
+
+---
+
 ## Queue visibility
 
 Every response includes:
@@ -454,17 +464,36 @@ See [`config.example.yml`](config.example.yml) for the full config with inline d
 ## Building on top of this
 
 **Prometheus scraping:**
+
+Add a dedicated scraper key — low priority and capped at 1 concurrent so metrics polling can't displace inference traffic:
+
+```yaml
+# config.yml
+auth:
+  enabled: true
+  keys:
+    - key: "sk-my-metrics-key"
+      client_id: "prometheus-scraper"
+      description: "Prometheus metrics scraper"
+      max_priority: low
+      management: false
+      max_concurrent: 1
+```
+
+The recommended Docker pattern is a shared `prometheus-scrape` network so Prometheus reaches OQP by container name — no host port exposure required. Use `authorization.credentials` (not the legacy `bearer_token` field):
+
 ```yaml
 # prometheus.yml
 scrape_configs:
   - job_name: ollama-queue-proxy
     static_configs:
-      - targets: ["localhost:11435"]
+      - targets: ["ollama-queue-proxy:11435"]
     metrics_path: /metrics
-    bearer_token: "sk-my-metrics-key"
+    authorization:
+      credentials: "sk-my-metrics-key"
 ```
 
-Key v0.2.0 metrics:
+Key metrics:
 - `oqp_routing_decisions_total{reason}` — `model_match`, `round_robin`, `fallback`
 - `oqp_host_models_loaded{host}` — live model inventory per host
 - `oqp_embedding_cache_hits_total{client,model,endpoint}` — cache hit rate
