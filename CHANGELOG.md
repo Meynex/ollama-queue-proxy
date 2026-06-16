@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-16
+
+### Fixed
+- **Content-Length off-by-one on non-streaming responses** — Ollama appends a trailing newline to non-streaming JSON response bodies. `JSONResponse` re-serialises the body without it, but Starlette only auto-computes `content-length` when the header is absent from the passed headers dict. The upstream (stale) value was winning, making `Content-Length` 1 byte too large. Fixed by stripping `content-length` and `transfer-encoding` from upstream headers before building the `JSONResponse`.
+
 ## [0.3.0] - 2026-05-28
 
 ### Added
