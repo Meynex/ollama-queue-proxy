@@ -269,6 +269,36 @@ def test_routing_invalid_strategy_exits(tmp_path):
         load_config(path)
 
 
+def test_preferred_hosts_are_canonicalized_and_validated(tmp_path):
+    data = base_config()
+    data["ollama"]["hosts"] = [
+        {"url": "http://rtx:11434", "name": "rtx"},
+        {"url": "http://v100:11434", "name": "v100"},
+    ]
+    data["routing"] = {
+        "aliases": {"qwen8": "qwen3:8b"},
+        "preferred_hosts": {"qwen8": ["rtx"], "OpenViking-20B": ["v100"]},
+    }
+    cfg = load_config(write_config(tmp_path, data))
+    assert cfg.routing.preferred_hosts == {
+        "qwen3:8b": ["rtx"], "OpenViking-20B": ["v100"]
+    }
+
+
+def test_preferred_hosts_unknown_host_exits(tmp_path):
+    data = base_config()
+    data["routing"] = {"preferred_hosts": {"qwen3:8b": ["missing"]}}
+    with pytest.raises(SystemExit):
+        load_config(write_config(tmp_path, data))
+
+
+def test_preferred_hosts_empty_host_name_exits(tmp_path):
+    data = base_config()
+    data["routing"] = {"preferred_hosts": {"qwen3:8b": [""]}}
+    with pytest.raises(SystemExit):
+        load_config(write_config(tmp_path, data))
+
+
 # ---------------------------------------------------------------------------
 # Embedding cache config
 # ---------------------------------------------------------------------------

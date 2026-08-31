@@ -206,12 +206,12 @@ When running multiple Ollama hosts (different GPUs or different model sets), the
 ```yaml
 ollama:
   hosts:
-    - url: "http://forge:11434"
-      name: "primary"
+    - url: "http://ollama-rtx:11434"
+      name: "rtx"
       weight: 2                    # gets 2x the traffic of weight-1 hosts
       model_sync_interval: 30      # seconds between /api/tags polls
-    - url: "http://helm:11434"
-      name: "secondary"
+    - url: "http://ollama-v100:11434"
+      name: "v100"
       weight: 1
       model_sync_interval: 30
   health_check_interval: 30
@@ -222,7 +222,19 @@ routing:
   retry: false                      # retries/failover are opt-in
   max_retries: 0
   model_poll_timeout: 3
+  # Canonical model -> ordered host preference (hosts must be configured above).
+  preferred_hosts:
+    qwen3:8b: [rtx]
+    OpenViking-20B: [v100]
+    OpenViking-Embedding: [v100]
 ```
+
+`preferred_hosts` is optional and only applies to `model_aware` routing. Aliases are
+canonicalized before lookup, so client aliases can be used as keys. The listed hosts
+are tried in order when they are reachable and have the model; other matching hosts
+remain eligible afterward. If no host has the model, the existing `fallback` policy is
+unchanged (`none` safely returns no route; `any_healthy` may load it on a healthy
+preferred host first). Unknown or empty host names are rejected during config loading.
 
 **How it works:** a background poller hits `GET /api/tags` on each host every `model_sync_interval` seconds, maintaining a live `(host → loaded_models)` map. Requests with a `model` field are routed to a host that already has it. Weighted round-robin is deterministic (not stochastic) — a 2:1 weight ratio means exactly 2 requests to the heavy host for every 1 to the lighter host.
 

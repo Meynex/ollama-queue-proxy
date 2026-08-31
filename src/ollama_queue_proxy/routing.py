@@ -139,7 +139,14 @@ class RoutingTable:
 
     def canonical_model(self, model: str | None) -> str | None:
         """Return the configured canonical name for a client-facing model."""
-        return self._routing_cfg.aliases.get(model, model) if model else model
+        if not model:
+            return model
+        canonical = model
+        seen: set[str] = set()
+        while canonical in self._routing_cfg.aliases and canonical not in seen:
+            seen.add(canonical)
+            canonical = self._routing_cfg.aliases[canonical]
+        return canonical
 
     def invalidate(self, host_name: str, model: str) -> None:
         """
@@ -180,7 +187,7 @@ class RoutingTable:
         with_model = [s for s in reachable if model in s.loaded_models]
 
         if with_model:
-            result = self._pick_round_robin(with_model)
+            result = self._pick_preferred(model, with_model)
             if result:
                 self.routing_decisions["model_match"] += 1
             return result
@@ -189,12 +196,23 @@ class RoutingTable:
         # sending a model to an arbitrary GPU can cause an unexpected large load.
         fallback = self._routing_cfg.fallback
         if fallback == "any_healthy":
-            result = self._pick_round_robin(reachable)
+            result = self._pick_preferred(model, reachable)
             if result:
                 self.routing_decisions["fallback"] += 1
             return result
 
         return None
+
+    def _pick_preferred(
+        self, model: str, candidates: list[HostRoutingState]
+    ) -> HostRoutingState | None:
+        """Pick the first configured preferred host, then balance the rest."""
+        by_name = {state.name: state for state in candidates}
+        for host_name in self._routing_cfg.preferred_hosts.get(model, []):
+            state = by_name.get(host_name)
+            if state:
+                return state
+        return self._pick_round_robin(candidates)
 
     def _pick_round_robin(self, candidates: list[HostRoutingState]) -> HostRoutingState | None:
         """
