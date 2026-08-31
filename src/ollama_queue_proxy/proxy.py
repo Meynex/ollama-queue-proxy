@@ -158,6 +158,19 @@ async def dispatch_request(
         forward_headers["x-client-id"] = client_id
 
     model = extract_model(body)
+    canonical_model = (
+        routing_table.canonical_model(model)
+        if routing_table is not None
+        else config.routing.aliases.get(model, model) if model else model
+    )
+    if model and canonical_model and canonical_model != model:
+        try:
+            payload = json.loads(body)
+            payload["model"] = canonical_model
+            body = json.dumps(payload, separators=(",", ":")).encode()
+            model = canonical_model
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     # Build candidate host list — routing table (model_aware) or HostManager fallback
     def _next_host() -> OllamaHost | None:

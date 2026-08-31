@@ -77,19 +77,19 @@ auth:
   # WARNING: auth.enabled: true with no keys configured is a fatal startup error.
   keys: []
   # Example keys (v0.2.0 — includes new max_concurrent field):
-  # - key: "${ADMIN_API_KEY}"       # or hardcode, but use env vars for real deployments
+  # - key: "replace-with-admin-secret" # keep config.yml protected (mode 0600)
   #   client_id: "admin"
   #   description: "Admin key — full access"
   #   max_priority: high
   #   management: true              # required to call /queue/pause, /drain, /flush
   #   max_concurrent: 0            # 0 = unlimited (subject to proxy.max_concurrent)
-  # - key: "${OPENWEBUI_API_KEY}"
+  # - key: "replace-with-openwebui-secret"
   #   client_id: "openwebui"
   #   description: "Open WebUI — interactive"
   #   max_priority: high
   #   management: false
   #   max_concurrent: 0
-  # - key: "${MEMSEARCH_API_KEY}"
+  # - key: "replace-with-memsearch-secret"
   #   client_id: "memsearch-watch"
   #   description: "Background embedding re-index jobs"
   #   max_priority: low

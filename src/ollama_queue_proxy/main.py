@@ -410,8 +410,13 @@ async def proxy_handler(request: Request, path: str):
     # OpenViking can identify itself either with a dedicated header or by the
     # configured client id. It still cannot exceed an authenticated key ceiling.
     ov_header = state.config.routing.openviking_header
-    ov_client = request.headers.get(ov_header, "").lower() in {"1", "true", "yes", "openviking"}
-    ov_client = ov_client or (client_id is not None and client_id in state.config.routing.openviking_clients)
+    ov_client = request.headers.get(ov_header, "").lower() in {
+        "1", "true", "yes", "openviking"
+    }
+    ov_client = ov_client or (
+        client_id is not None
+        and client_id in state.config.routing.openviking_clients
+    )
     if ov_client:
         requested_priority = state.config.routing.openviking_priority
     tier = state.auth_manager.enforce_priority_ceiling(requested_priority, key_cfg)

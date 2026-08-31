@@ -100,11 +100,11 @@ def test_wrap_response_missing_model_falls_back_to_empty_string():
     assert result["model"] == ""
 
 
-# ── test_env_override_list_index_skipped_gracefully ───────────────────────────
+# ── test_env_override_list_index ──────────────────────────────────────────────
 
 
-def test_env_override_list_index_skipped_gracefully(monkeypatch):
-    """OQP_OLLAMA__HOSTS__0__URL must not crash and must not corrupt data."""
+def test_env_override_list_index(monkeypatch):
+    """OQP_OLLAMA__HOSTS__0__URL overrides a configured list item."""
     monkeypatch.setenv("OQP_OLLAMA__HOSTS__0__URL", "http://tampered:11434")
 
     from ollama_queue_proxy.config import _apply_env_overrides
@@ -112,5 +112,4 @@ def test_env_override_list_index_skipped_gracefully(monkeypatch):
     data = {"ollama": {"hosts": [{"url": "http://original:11434", "name": "primary"}]}}
     result = _apply_env_overrides(data)
 
-    # The list must be untouched — the env var is silently skipped
-    assert result["ollama"]["hosts"][0]["url"] == "http://original:11434"
+    assert result["ollama"]["hosts"][0]["url"] == "http://tampered:11434"

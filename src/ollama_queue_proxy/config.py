@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Literal
 
@@ -206,6 +207,13 @@ class ConcurrencyConfig(BaseModel):
             raise ValueError("concurrency.v100_limit must be non-negative")
         return v
 
+    @field_validator("per_model")
+    @classmethod
+    def valid_model_limits(cls, v: dict[str, int]) -> dict[str, int]:
+        if any(limit < 1 for limit in v.values()):
+            raise ValueError("concurrency.per_model values must be positive")
+        return v
+
 
 class KeepAliveConfig(BaseModel):
     default: str = "5m"
@@ -238,6 +246,16 @@ class Config(BaseModel):
             self.routing.exclusive_models = list(dict.fromkeys(
                 self.routing.exclusive_models + self.concurrency.exclusive_models
             ))
+        # Normalize all model policy keys once aliases are known. This keeps
+        # aliases and canonical names on the same semaphore and exclusive gate.
+        self.routing.per_model_concurrency = {
+            self.routing.aliases.get(model, model): limit
+            for model, limit in self.routing.per_model_concurrency.items()
+        }
+        self.routing.exclusive_models = list(dict.fromkeys(
+            self.routing.aliases.get(model, model)
+            for model in self.routing.exclusive_models
+        ))
         self._validate_injection_ports()
         self._validate_inject_as_refs()
         self._validate_client_max_concurrent()
@@ -319,6 +337,26 @@ class Config(BaseModel):
             )
 
 
+_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env_references(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _expand_env_references(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_references(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in os.environ:
+            raise ValueError(f"environment variable {name} is not set")
+        return os.environ[name]
+
+    return _ENV_REFERENCE.sub(replace, value)
+
+
 def _apply_env_overrides(data: dict, prefix: str = "OQP") -> dict:
     """Apply OQP_ env var overrides onto the raw config dict using __ nesting."""
     for key, value in os.environ.items():
@@ -358,7 +396,11 @@ def _apply_env_overrides(data: dict, prefix: str = "OQP") -> dict:
 
 def load_config(path: str | None = None) -> Config:
     """Load configuration from YAML file with env var overrides."""
-    config_path = path or os.environ.get("CONFIG_PATH") or os.environ.get("OQP_CONFIG", "./config.yml")
+    config_path = (
+        path
+        or os.environ.get("CONFIG_PATH")
+        or os.environ.get("OQP_CONFIG", "./config.yml")
+    )
     try:
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
@@ -373,8 +415,9 @@ def load_config(path: str | None = None) -> Config:
         print(f"FATAL: Config file parse error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    raw = _apply_env_overrides(raw)
     try:
+        raw = _expand_env_references(raw)
+        raw = _apply_env_overrides(raw)
         return Config.model_validate(raw)
     except Exception as e:
         print(f"FATAL: Config validation error: {e}", file=sys.stderr)

@@ -125,7 +125,7 @@ docker compose up -d
 
 Then point your consumers at `http://localhost:11435` instead of `http://localhost:11434`.
 
-> **Warning:** Default config has no authentication. If exposing beyond localhost, set `auth.enabled: true` and configure API keys. The docker-compose example binds to `127.0.0.1` for this reason.
+> **Warning:** Default config has no authentication. If exposing beyond localhost, set `auth.enabled: true` and configure API keys. The docker-compose example binds to `127.0.0.1` for this reason. Keep `config.yml` at mode `0600`; the image runs as UID/GID `1000:1000`, so the Unraid bind-mounted file must be readable by that identity.
 
 ---
 
@@ -218,7 +218,9 @@ ollama:
 
 routing:
   strategy: model_aware            # model_aware | round_robin
-  fallback: any_healthy            # when no host has the model: pick any healthy host
+  fallback: none                   # safe default; any_healthy must be explicitly enabled
+  retry: false                      # retries/failover are opt-in
+  max_retries: 0
   model_poll_timeout: 3
 ```
 
@@ -515,7 +517,7 @@ A generic reverse proxy gives you auth (one shared key) and TLS termination. Thi
 - **Model-aware routing** — requests for models only on certain hosts go to the right host
 - **Embedding cache** — avoid redundant upstream calls for repeated RAG/search embedding requests
 - **Queue visibility** — `X-Queue-Wait-Time`, `X-Queue-Position`, `Retry-After`, `/queue/status`
-- **Failover** — if the primary Ollama host goes down, requests continue on the fallback
+- **Failover** — disabled by default; explicitly configure `routing.fallback: any_healthy` and `routing.retry: true` only for workloads where retrying is safe
 
 If you already have a reverse proxy, put this behind it rather than replacing it.
 
