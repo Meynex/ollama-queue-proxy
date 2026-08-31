@@ -140,9 +140,19 @@ logging:
 # OQP_ROUTING__STRATEGY=model_aware
 #
 # routing:
-#   strategy: model_aware            # model_aware | round_robin (default: round_robin)
-#   fallback: any_healthy            # when no host has the model loaded: pick any healthy host
-#   model_poll_timeout: 3            # seconds for each /api/tags poll
+#   strategy: model_aware            # model_aware | round_robin
+#   fallback: none                   # none (safe default) | any_healthy
+#   retry: false                     # retries/failover are opt-in
+#   max_retries: 0
+#   model_poll_timeout: 3
+#   aliases: {llama3.2: llama3.2:latest}
+#   per_model_concurrency: {llama3.2: 1}
+#   exclusive_models: [70b-model]
+#   v100_models: [70b-model]
+#   v100_concurrency: 1
+#   openviking_clients: [openviking]
+#   openviking_priority: high
+#   openviking_header: X-OpenViking
 
 # ---------------------------------------------------------------------------
 # NEW v0.2.0 — Embedding cache

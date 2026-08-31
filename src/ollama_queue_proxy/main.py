@@ -120,8 +120,11 @@ async def lifespan(app: FastAPI):
         await embedding_cache.startup()
 
     concurrency_manager: ClientConcurrencyManager | None = None
-    if any(k.max_concurrent > 0 for k in config.auth.keys):
-        concurrency_manager = ClientConcurrencyManager(config.auth.keys)
+    if (any(k.max_concurrent > 0 for k in config.auth.keys)
+            or config.routing.per_model_concurrency
+            or config.routing.exclusive_models
+            or config.routing.v100_concurrency > 0):
+        concurrency_manager = ClientConcurrencyManager(config.auth.keys, config.routing)
 
     state = AppState(
         config=config,
@@ -288,7 +291,9 @@ async def _enqueue_request(
     async def dispatch_fn():
         # Per-client concurrency cap: acquire slot before upstream, release after
         if conc_mgr is not None:
-            await conc_mgr.acquire(client_id, reentries=reentries)
+            await conc_mgr.acquire(
+                client_id, reentries=reentries, model=extract_model(body)
+            )
         try:
             return await dispatch_request(
                 request=request,
@@ -302,7 +307,7 @@ async def _enqueue_request(
             )
         finally:
             if conc_mgr is not None:
-                conc_mgr.release(client_id)
+                conc_mgr.release(client_id, model=extract_model(body))
 
     item = QueueItem(
         tier=tier,
@@ -402,6 +407,13 @@ async def proxy_handler(request: Request, path: str):
 
     # Parse and enforce priority ceiling
     requested_priority = parse_priority(request)
+    # OpenViking can identify itself either with a dedicated header or by the
+    # configured client id. It still cannot exceed an authenticated key ceiling.
+    ov_header = state.config.routing.openviking_header
+    ov_client = request.headers.get(ov_header, "").lower() in {"1", "true", "yes", "openviking"}
+    ov_client = ov_client or (client_id is not None and client_id in state.config.routing.openviking_clients)
+    if ov_client:
+        requested_priority = state.config.routing.openviking_priority
     tier = state.auth_manager.enforce_priority_ceiling(requested_priority, key_cfg)
 
     # OpenAI-compat path handling: rewrite path before enqueue, wrap response after

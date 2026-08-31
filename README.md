@@ -26,7 +26,7 @@ Everything else works as before. Streaming, `/api/tags`, `/api/version` — all 
 | **Embedding cache** | Hash-keyed Valkey cache for `/api/embed` and `/api/embeddings` — repeated RAG requests skip upstream |
 | **keep_alive defaulting** | Prevent Ollama from unloading models between bursty requests |
 | **Per-client concurrency caps** | Hard ceiling per client so batch workloads can't starve interactive ones |
-| **Failover** | On host failure, retry on the next configured host transparently |
+| **Opt-in failover** | Retries are disabled by default; enable `routing.retry` explicitly |
 
 > **Just need auth?** See [ollama-auth-sidecar](https://github.com/TadMSTR/ollama-auth-sidecar) — a simpler tool if queuing, routing, and caching aren't needed.
 
@@ -312,7 +312,7 @@ ollama:
       name: "fallback"
 ```
 
-On connection failure or timeout, the proxy marks the host unhealthy, logs it, and retries on the next host. The response includes `X-Failover-Host` showing which host handled it.
+On connection failure or timeout, the proxy marks the host unhealthy and returns 503 by default. Retries/failover are opt-in (`routing.retry: true`, bounded by `routing.max_retries`) because retrying generation can duplicate side effects. The response includes `X-Failover-Host` when a request succeeds.
 
 Background health checks (`GET /api/tags`) recover unhealthy hosts without a restart.
 
@@ -447,7 +447,7 @@ Delivery is fire-and-forget (5s timeout). Failed deliveries are logged at WARNIN
 
 `max_concurrent` controls how many requests the proxy dispatches to Ollama simultaneously. Set it to match Ollama's `OLLAMA_NUM_PARALLEL` environment variable (Ollama's default is 1; the proxy default of 2 assumes you've set `OLLAMA_NUM_PARALLEL=2` or higher on the Ollama side). They're independent settings — the proxy throttles at the queue layer, Ollama throttles internally. If they're mismatched, requests will either queue unnecessarily or pile up at Ollama.
 
-All values can be overridden via env vars with `OQP_` prefix and `__` nesting:
+All values can be overridden via YAML or env vars with `OQP_` prefix and `__` nesting (including list indexes and JSON/YAML values). `CONFIG_PATH` and `OQP_CONFIG` select the config file:
 
 ```bash
 OQP_PROXY__PORT=11435

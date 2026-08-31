@@ -160,6 +160,9 @@ class RoutingTable:
         Returns None if no host is available.
         """
         strategy = self._routing_cfg.strategy
+        # Resolve aliases before inventory matching; upstream still receives the
+        # original request body so Ollama clients remain protocol-compatible.
+        model = self._routing_cfg.aliases.get(model, model) if model else model
 
         if strategy == "model_aware" and model:
             return self._pick_model_aware(model)
@@ -179,7 +182,8 @@ class RoutingTable:
                 self.routing_decisions["model_match"] += 1
             return result
 
-        # Fall back — no host has the model loaded
+        # Fall back — no host has the model loaded. Disabled by default because
+        # sending a model to an arbitrary GPU can cause an unexpected large load.
         fallback = self._routing_cfg.fallback
         if fallback == "any_healthy":
             result = self._pick_round_robin(reachable)

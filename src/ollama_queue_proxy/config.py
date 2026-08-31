@@ -153,8 +153,35 @@ class ClientInjectionConfig(BaseModel):
 
 class RoutingConfig(BaseModel):
     strategy: Literal["model_aware", "round_robin"] = "round_robin"
-    fallback: Literal["any_healthy"] = "any_healthy"
+    # Safety first: never send a request to an arbitrary host or retry it unless
+    # explicitly enabled.  This prevents duplicate generation side effects.
+    fallback: Literal["none", "any_healthy"] = "none"
+    retry: bool = False
+    max_retries: int = 0
     model_poll_timeout: int = 3
+    # Model names are deliberately config-driven (including aliases used by clients).
+    aliases: dict[str, str] = {}
+    exclusive_models: list[str] = []
+    per_model_concurrency: dict[str, int] = {}
+    v100_models: list[str] = []
+    v100_concurrency: int = 0  # 0 disables the shared V100 semaphore
+    openviking_clients: list[str] = []
+    openviking_priority: Literal["high", "normal", "low"] = "high"
+    openviking_header: str = "X-OpenViking"
+
+    @field_validator("max_retries", "v100_concurrency")
+    @classmethod
+    def non_negative_limits(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("routing concurrency and retry limits must be non-negative")
+        return v
+
+    @field_validator("per_model_concurrency")
+    @classmethod
+    def valid_model_limits(cls, v: dict[str, int]) -> dict[str, int]:
+        if any(limit < 1 for limit in v.values()):
+            raise ValueError("routing.per_model_concurrency values must be positive")
+        return v
 
 
 class EmbeddingCacheConfig(BaseModel):
@@ -164,6 +191,20 @@ class EmbeddingCacheConfig(BaseModel):
     max_entry_bytes: int = 32768
     key_prefix: str = "oqp:embed:"
     connect_timeout: int = 2
+
+
+class ConcurrencyConfig(BaseModel):
+    """Optional policy spelling for deployments that keep limits separate."""
+    per_model: dict[str, int] = {}
+    v100_limit: int = 0
+    exclusive_models: list[str] = []
+
+    @field_validator("v100_limit")
+    @classmethod
+    def valid_v100_limit(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("concurrency.v100_limit must be non-negative")
+        return v
 
 
 class KeepAliveConfig(BaseModel):
@@ -181,11 +222,22 @@ class Config(BaseModel):
     # v0.2.0 sections
     client_injection: ClientInjectionConfig = ClientInjectionConfig()
     routing: RoutingConfig = RoutingConfig()
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
     embedding_cache: EmbeddingCacheConfig = EmbeddingCacheConfig()
     keep_alive: KeepAliveConfig = KeepAliveConfig()
 
     @model_validator(mode="after")
     def validate_v2_constraints(self) -> "Config":
+        # Accept both the compact routing section and the dedicated concurrency
+        # section; routing remains the canonical internal representation.
+        if self.concurrency.per_model:
+            self.routing.per_model_concurrency.update(self.concurrency.per_model)
+        if self.concurrency.v100_limit:
+            self.routing.v100_concurrency = self.concurrency.v100_limit
+        if self.concurrency.exclusive_models:
+            self.routing.exclusive_models = list(dict.fromkeys(
+                self.routing.exclusive_models + self.concurrency.exclusive_models
+            ))
         self._validate_injection_ports()
         self._validate_inject_as_refs()
         self._validate_client_max_concurrent()
@@ -273,27 +325,40 @@ def _apply_env_overrides(data: dict, prefix: str = "OQP") -> dict:
         if not key.startswith(prefix + "_"):
             continue
         parts = key[len(prefix) + 1 :].lower().split("__")
-        # List-index overrides (e.g. OQP_OLLAMA__HOSTS__0__URL) are not
-        # supported — skip the entire key if any component is a digit.
-        if any(p.isdigit() for p in parts):
-            continue
-        target = data
-        for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        leaf = parts[-1]
-        # Attempt type coercion for booleans and integers
-        if value.lower() in ("true", "false"):
-            target[leaf] = value.lower() == "true"
-        elif value.isdigit():
-            target[leaf] = int(value)
+        target: object = data
+        for index, part in enumerate(parts[:-1]):
+            next_part = parts[index + 1]
+            if part.isdigit():
+                if not isinstance(target, list):
+                    break
+                while len(target) <= int(part):
+                    target.append({} if not next_part.isdigit() else [])
+                target = target[int(part)]
+            else:
+                if not isinstance(target, dict):
+                    break
+                if part not in target:
+                    target[part] = [] if next_part.isdigit() else {}
+                target = target[part]
         else:
-            target[leaf] = value
+            leaf = parts[-1]
+            try:
+                # YAML scalar parsing also handles null, lists, and JSON maps.
+                parsed = yaml.safe_load(value)
+            except yaml.YAMLError:
+                parsed = value
+            if isinstance(target, list) and leaf.isdigit():
+                while len(target) <= int(leaf):
+                    target.append(None)
+                target[int(leaf)] = parsed
+            elif isinstance(target, dict):
+                target[leaf] = parsed
     return data
 
 
 def load_config(path: str | None = None) -> Config:
     """Load configuration from YAML file with env var overrides."""
-    config_path = path or os.environ.get("OQP_CONFIG", "./config.yml")
+    config_path = path or os.environ.get("CONFIG_PATH") or os.environ.get("OQP_CONFIG", "./config.yml")
     try:
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}

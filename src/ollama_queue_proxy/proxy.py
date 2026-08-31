@@ -181,6 +181,7 @@ async def dispatch_request(
 
     last_error: str | None = None
     attempted: set[str] = set()
+    retries = 0
 
     while True:
         host = _next_host()
@@ -271,8 +272,14 @@ async def dispatch_request(
                 if rt_state:
                     rt_state.reachable = False
             logger.warning(
-                "proxy.failover host=%s error=%s trying_next=true", host.name, last_error
+                "proxy.upstream_failed host=%s retry_enabled=%s error=%s",
+                host.name, config.routing.retry, last_error,
             )
+            # Retrying generation requests can duplicate side effects and is
+            # intentionally opt-in. Legacy failover remains available by config.
+            retries += 1
+            if not config.routing.retry or retries > config.routing.max_retries:
+                break
             continue
 
     return JSONResponse(

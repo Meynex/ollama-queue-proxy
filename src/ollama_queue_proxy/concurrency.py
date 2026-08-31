@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from .config import ApiKeyConfig
+from .config import ApiKeyConfig, RoutingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,16 @@ class ClientConcurrencyManager:
     the semaphore to prevent livelock when a capped client floods its secondary queue.
     """
 
-    def __init__(self, key_configs: list[ApiKeyConfig]) -> None:
+    def __init__(self, key_configs: list[ApiKeyConfig], routing: RoutingConfig | None = None) -> None:
         self._states: dict[str, ClientState] = {}
+        routing = routing or RoutingConfig()
+        self._model_semaphores = {name: asyncio.Semaphore(limit) for name, limit in routing.per_model_concurrency.items()}
+        for name in routing.exclusive_models:
+            self._model_semaphores.setdefault(name, asyncio.Semaphore(1))
+        self._aliases = routing.aliases
+        self._v100_models = {self._aliases.get(name, name) for name in routing.v100_models}
+        self._v100_semaphore = asyncio.Semaphore(routing.v100_concurrency) if routing.v100_concurrency > 0 else None
+        self._held: dict[tuple[str | None, str | None], list[list[asyncio.Semaphore]]] = {}
         for key in key_configs:
             self._states[key.client_id] = ClientState(
                 client_id=key.client_id,
@@ -73,7 +81,7 @@ class ClientConcurrencyManager:
             return None
         return self._states.get(client_id)
 
-    async def acquire(self, client_id: str | None, reentries: int = 0) -> None:
+    async def acquire(self, client_id: str | None, reentries: int = 0, model: str | None = None) -> None:
         """
         Acquire a concurrency slot for client_id.
 
@@ -81,6 +89,16 @@ class ClientConcurrencyManager:
         No-op for unknown or unlimited clients.
         """
         state = self.get_state(client_id)
+        acquired: list[asyncio.Semaphore] = []
+        canonical = self._aliases.get(model, model) if model else None
+        model_sem = self._model_semaphores.get(canonical or "")
+        if model_sem is not None:
+            await model_sem.acquire()
+            acquired.append(model_sem)
+        if canonical in self._v100_models and self._v100_semaphore is not None:
+            await self._v100_semaphore.acquire()
+            acquired.append(self._v100_semaphore)
+        self._held.setdefault((client_id, model), []).append(acquired)
         if state is None:
             return
         if not state.is_capped:
@@ -96,11 +114,16 @@ class ClientConcurrencyManager:
             return
         await state.acquire()
 
-    def release(self, client_id: str | None) -> None:
+    def release(self, client_id: str | None, model: str | None = None) -> None:
+        held = self._held.get((client_id, model), [])
+        acquired = held.pop() if held else []
+        if not held:
+            self._held.pop((client_id, model), None)
+        for semaphore in acquired:
+            semaphore.release()
         state = self.get_state(client_id)
-        if state is None:
-            return
-        state.release()
+        if state is not None:
+            state.release()
 
     def inflight_counts(self) -> dict[str, int]:
         return {cid: s.inflight for cid, s in self._states.items()}
