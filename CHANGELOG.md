@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-31
+
+### Added
+- Configurable per-model preferred host ordering, with alias normalization and validation.
+
 ## [0.4.0] - 2026-08-31
 
 ### Fixed

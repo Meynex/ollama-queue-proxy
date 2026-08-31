@@ -17,8 +17,12 @@ def make_ollama_config(hosts: list[dict]) -> OllamaConfig:
     )
 
 
-def make_routing_config(strategy: str = "model_aware") -> RoutingConfig:
-    return RoutingConfig(strategy=strategy, fallback="any_healthy", model_poll_timeout=3)  # type: ignore[arg-type]
+def make_routing_config(
+    strategy: str = "model_aware", **kwargs: object
+) -> RoutingConfig:
+    return RoutingConfig(
+        strategy=strategy, fallback="any_healthy", model_poll_timeout=3, **kwargs
+    )  # type: ignore[arg-type]
 
 
 def make_table(hosts: list[dict], strategy: str = "model_aware") -> RoutingTable:
@@ -74,6 +78,73 @@ def test_round_robin_weighted_2_to_1():
 # ---------------------------------------------------------------------------
 # Model-aware routing choices
 # ---------------------------------------------------------------------------
+
+
+def test_preferred_host_wins_when_multiple_hosts_have_model():
+    table = make_table([
+        {"url": "http://v100:11434", "name": "v100", "weight": 1},
+        {"url": "http://rtx:11434", "name": "rtx", "weight": 1},
+    ])
+    for state in table._states.values():
+        state.loaded_models = {"qwen3:8b"}
+        state.reachable = True
+    table._routing_cfg.preferred_hosts = {"qwen3:8b": ["rtx", "v100"]}
+
+    assert table.pick("qwen3:8b").name == "rtx"
+
+
+def test_preferred_host_skips_unreachable_and_missing_model():
+    table = make_table([
+        {"url": "http://v100:11434", "name": "v100", "weight": 1},
+        {"url": "http://rtx:11434", "name": "rtx", "weight": 1},
+    ])
+    table._states["rtx"].loaded_models = {"qwen3:8b"}
+    table._states["rtx"].reachable = False
+    table._states["v100"].loaded_models = {"qwen3:8b"}
+    table._states["v100"].reachable = True
+    table._routing_cfg.preferred_hosts = {"qwen3:8b": ["rtx", "v100"]}
+
+    assert table.pick("qwen3:8b").name == "v100"
+
+
+def test_preferred_alias_is_canonicalized():
+    table = make_table([
+        {"url": "http://v100:11434", "name": "v100", "weight": 1},
+        {"url": "http://rtx:11434", "name": "rtx", "weight": 1},
+    ])
+    table._states["v100"].loaded_models = {"qwen3:8b"}
+    table._states["rtx"].loaded_models = {"qwen3:8b"}
+    table._routing_cfg.aliases = {"qwen8": "qwen3:8b"}
+    table._routing_cfg.preferred_hosts = {"qwen3:8b": ["rtx"]}
+
+    assert table.pick("qwen8").name == "rtx"
+
+
+def test_preferred_host_is_used_for_explicit_healthy_fallback():
+    table = make_table([
+        {"url": "http://v100:11434", "name": "v100", "weight": 1},
+        {"url": "http://rtx:11434", "name": "rtx", "weight": 1},
+    ])
+    for state in table._states.values():
+        state.loaded_models = set()
+        state.reachable = True
+    table._routing_cfg.preferred_hosts = {"OpenViking-Embedding": ["v100"]}
+
+    assert table.pick("OpenViking-Embedding").name == "v100"
+
+
+def test_preferred_missing_model_respects_safe_fallback():
+    table = make_table([
+        {"url": "http://v100:11434", "name": "v100", "weight": 1},
+        {"url": "http://rtx:11434", "name": "rtx", "weight": 1},
+    ])
+    for state in table._states.values():
+        state.loaded_models = set()
+        state.reachable = True
+    table._routing_cfg.fallback = "none"
+    table._routing_cfg.preferred_hosts = {"OpenViking-20B": ["v100"]}
+
+    assert table.pick("OpenViking-20B") is None
 
 
 def test_routes_to_host_with_model():

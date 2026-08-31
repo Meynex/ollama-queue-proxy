@@ -17,6 +17,13 @@ class HostConfig(BaseModel):
     weight: int = 1
     model_sync_interval: int = 30
 
+    @field_validator("name")
+    @classmethod
+    def non_empty_name(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("ollama.hosts[].name must not be empty")
+        return v
+
     @field_validator("weight")
     @classmethod
     def positive_weight(cls, v: int) -> int:
@@ -162,6 +169,8 @@ class RoutingConfig(BaseModel):
     model_poll_timeout: int = 3
     # Model names are deliberately config-driven (including aliases used by clients).
     aliases: dict[str, str] = {}
+    # Canonical model -> host names, in strict preference order.
+    preferred_hosts: dict[str, list[str]] = {}
     exclusive_models: list[str] = []
     per_model_concurrency: dict[str, int] = {}
     v100_models: list[str] = []
@@ -182,6 +191,22 @@ class RoutingConfig(BaseModel):
     def valid_model_limits(cls, v: dict[str, int]) -> dict[str, int]:
         if any(limit < 1 for limit in v.values()):
             raise ValueError("routing.per_model_concurrency values must be positive")
+        return v
+
+    @field_validator("preferred_hosts")
+    @classmethod
+    def valid_preferred_hosts(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        if any(not model.strip() for model in v):
+            raise ValueError("routing.preferred_hosts model names must not be empty")
+        for model, hosts in v.items():
+            if any(not host.strip() for host in hosts):
+                raise ValueError(
+                    f"routing.preferred_hosts[{model!r}] host names must not be empty"
+                )
+            if len(set(hosts)) != len(hosts):
+                raise ValueError(
+                    f"routing.preferred_hosts[{model!r}] must not contain duplicate hosts"
+                )
         return v
 
 
@@ -256,12 +281,36 @@ class Config(BaseModel):
             self.routing.aliases.get(model, model)
             for model in self.routing.exclusive_models
         ))
+        self.routing.preferred_hosts = self._canonicalize_preferred_hosts()
         self._validate_injection_ports()
         self._validate_inject_as_refs()
         self._validate_client_max_concurrent()
         self._validate_public_injection_bind()
         self._warn_public_injection_no_auth()
         return self
+
+    def _canonicalize_preferred_hosts(self) -> dict[str, list[str]]:
+        known_hosts = {host.name for host in self.ollama.hosts}
+        normalized: dict[str, list[str]] = {}
+        for model, hosts in self.routing.preferred_hosts.items():
+            canonical = model
+            seen_models: set[str] = set()
+            while canonical in self.routing.aliases and canonical not in seen_models:
+                seen_models.add(canonical)
+                canonical = self.routing.aliases[canonical]
+            unknown = [host for host in hosts if host not in known_hosts]
+            if unknown:
+                print(
+                    f"FATAL: routing.preferred_hosts[{model!r}] references unknown host(s): "
+                    f"{unknown}. Known hosts: {sorted(known_hosts)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            normalized.setdefault(canonical, []).extend(hosts)
+        return {
+            model: list(dict.fromkeys(hosts))
+            for model, hosts in normalized.items()
+        }
 
     def _validate_injection_ports(self) -> None:
         seen: set[int] = {self.proxy.port}

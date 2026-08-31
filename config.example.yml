@@ -34,12 +34,12 @@ ollama:
     #   Mac/Windows: http://host.docker.internal:11434
     # If Ollama is in the same Docker Compose stack, use its service name:
     #   http://ollama:11434
-    - url: "http://ollama-primary:11434"
-      name: "primary"
+    - url: "http://ollama-rtx:11434"
+      name: "rtx"
       weight: 1              # NEW v0.2.0: relative weight for weighted round-robin (default 1)
       model_sync_interval: 30  # NEW v0.2.0: seconds between /api/tags polls for routing table
-    # - url: "http://ollama-secondary:11434"
-    #   name: "secondary"
+    # - url: "http://ollama-v100:11434"
+    #   name: "v100"
     #   weight: 1
     #   model_sync_interval: 30
   health_check_interval: 30  # seconds between recovery checks on unhealthy hosts
@@ -145,7 +145,12 @@ logging:
 #   retry: false                     # retries/failover are opt-in
 #   max_retries: 0
 #   model_poll_timeout: 3
-#   aliases: {llama3.2: llama3.2:latest}
+#   aliases: {qwen8: qwen3:8b}
+#   # Canonical model -> ordered host preference. Unknown or empty hosts are rejected.
+#   preferred_hosts:
+#     qwen3:8b: [rtx]
+#     OpenViking-20B: [v100]
+#     OpenViking-Embedding: [v100]
 #   per_model_concurrency: {llama3.2: 1}
 #   exclusive_models: [70b-model]
 #   v100_models: [70b-model]
