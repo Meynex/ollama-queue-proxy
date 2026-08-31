@@ -77,19 +77,19 @@ auth:
   # WARNING: auth.enabled: true with no keys configured is a fatal startup error.
   keys: []
   # Example keys (v0.2.0 — includes new max_concurrent field):
-  # - key: "${ADMIN_API_KEY}"       # or hardcode, but use env vars for real deployments
+  # - key: "replace-with-admin-secret" # keep config.yml protected (mode 0600)
   #   client_id: "admin"
   #   description: "Admin key — full access"
   #   max_priority: high
   #   management: true              # required to call /queue/pause, /drain, /flush
   #   max_concurrent: 0            # 0 = unlimited (subject to proxy.max_concurrent)
-  # - key: "${OPENWEBUI_API_KEY}"
+  # - key: "replace-with-openwebui-secret"
   #   client_id: "openwebui"
   #   description: "Open WebUI — interactive"
   #   max_priority: high
   #   management: false
   #   max_concurrent: 0
-  # - key: "${MEMSEARCH_API_KEY}"
+  # - key: "replace-with-memsearch-secret"
   #   client_id: "memsearch-watch"
   #   description: "Background embedding re-index jobs"
   #   max_priority: low
@@ -140,9 +140,19 @@ logging:
 # OQP_ROUTING__STRATEGY=model_aware
 #
 # routing:
-#   strategy: model_aware            # model_aware | round_robin (default: round_robin)
-#   fallback: any_healthy            # when no host has the model loaded: pick any healthy host
-#   model_poll_timeout: 3            # seconds for each /api/tags poll
+#   strategy: model_aware            # model_aware | round_robin
+#   fallback: none                   # none (safe default) | any_healthy
+#   retry: false                     # retries/failover are opt-in
+#   max_retries: 0
+#   model_poll_timeout: 3
+#   aliases: {llama3.2: llama3.2:latest}
+#   per_model_concurrency: {llama3.2: 1}
+#   exclusive_models: [70b-model]
+#   v100_models: [70b-model]
+#   v100_concurrency: 1
+#   openviking_clients: [openviking]
+#   openviking_priority: high
+#   openviking_header: X-OpenViking
 
 # ---------------------------------------------------------------------------
 # NEW v0.2.0 — Embedding cache

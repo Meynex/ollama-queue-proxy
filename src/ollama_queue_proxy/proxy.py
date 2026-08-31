@@ -158,6 +158,19 @@ async def dispatch_request(
         forward_headers["x-client-id"] = client_id
 
     model = extract_model(body)
+    canonical_model = (
+        routing_table.canonical_model(model)
+        if routing_table is not None
+        else config.routing.aliases.get(model, model) if model else model
+    )
+    if model and canonical_model and canonical_model != model:
+        try:
+            payload = json.loads(body)
+            payload["model"] = canonical_model
+            body = json.dumps(payload, separators=(",", ":")).encode()
+            model = canonical_model
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     # Build candidate host list — routing table (model_aware) or HostManager fallback
     def _next_host() -> OllamaHost | None:
@@ -181,6 +194,7 @@ async def dispatch_request(
 
     last_error: str | None = None
     attempted: set[str] = set()
+    retries = 0
 
     while True:
         host = _next_host()
@@ -271,8 +285,14 @@ async def dispatch_request(
                 if rt_state:
                     rt_state.reachable = False
             logger.warning(
-                "proxy.failover host=%s error=%s trying_next=true", host.name, last_error
+                "proxy.upstream_failed host=%s retry_enabled=%s error=%s",
+                host.name, config.routing.retry, last_error,
             )
+            # Retrying generation requests can duplicate side effects and is
+            # intentionally opt-in. Legacy failover remains available by config.
+            retries += 1
+            if not config.routing.retry or retries > config.routing.max_retries:
+                break
             continue
 
     return JSONResponse(

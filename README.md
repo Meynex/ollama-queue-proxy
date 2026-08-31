@@ -26,7 +26,7 @@ Everything else works as before. Streaming, `/api/tags`, `/api/version` — all 
 | **Embedding cache** | Hash-keyed Valkey cache for `/api/embed` and `/api/embeddings` — repeated RAG requests skip upstream |
 | **keep_alive defaulting** | Prevent Ollama from unloading models between bursty requests |
 | **Per-client concurrency caps** | Hard ceiling per client so batch workloads can't starve interactive ones |
-| **Failover** | On host failure, retry on the next configured host transparently |
+| **Opt-in failover** | Retries are disabled by default; enable `routing.retry` explicitly |
 
 > **Just need auth?** See [ollama-auth-sidecar](https://github.com/TadMSTR/ollama-auth-sidecar) — a simpler tool if queuing, routing, and caching aren't needed.
 
@@ -125,7 +125,7 @@ docker compose up -d
 
 Then point your consumers at `http://localhost:11435` instead of `http://localhost:11434`.
 
-> **Warning:** Default config has no authentication. If exposing beyond localhost, set `auth.enabled: true` and configure API keys. The docker-compose example binds to `127.0.0.1` for this reason.
+> **Warning:** Default config has no authentication. If exposing beyond localhost, set `auth.enabled: true` and configure API keys. The docker-compose example binds to `127.0.0.1` for this reason. Keep `config.yml` at mode `0600`; the image runs as UID/GID `1000:1000`, so the Unraid bind-mounted file must be readable by that identity.
 
 ---
 
@@ -218,7 +218,9 @@ ollama:
 
 routing:
   strategy: model_aware            # model_aware | round_robin
-  fallback: any_healthy            # when no host has the model: pick any healthy host
+  fallback: none                   # safe default; any_healthy must be explicitly enabled
+  retry: false                      # retries/failover are opt-in
+  max_retries: 0
   model_poll_timeout: 3
 ```
 
@@ -312,7 +314,7 @@ ollama:
       name: "fallback"
 ```
 
-On connection failure or timeout, the proxy marks the host unhealthy, logs it, and retries on the next host. The response includes `X-Failover-Host` showing which host handled it.
+On connection failure or timeout, the proxy marks the host unhealthy and returns 503 by default. Retries/failover are opt-in (`routing.retry: true`, bounded by `routing.max_retries`) because retrying generation can duplicate side effects. The response includes `X-Failover-Host` when a request succeeds.
 
 Background health checks (`GET /api/tags`) recover unhealthy hosts without a restart.
 
@@ -447,7 +449,7 @@ Delivery is fire-and-forget (5s timeout). Failed deliveries are logged at WARNIN
 
 `max_concurrent` controls how many requests the proxy dispatches to Ollama simultaneously. Set it to match Ollama's `OLLAMA_NUM_PARALLEL` environment variable (Ollama's default is 1; the proxy default of 2 assumes you've set `OLLAMA_NUM_PARALLEL=2` or higher on the Ollama side). They're independent settings — the proxy throttles at the queue layer, Ollama throttles internally. If they're mismatched, requests will either queue unnecessarily or pile up at Ollama.
 
-All values can be overridden via env vars with `OQP_` prefix and `__` nesting:
+All values can be overridden via YAML or env vars with `OQP_` prefix and `__` nesting (including list indexes and JSON/YAML values). `CONFIG_PATH` and `OQP_CONFIG` select the config file:
 
 ```bash
 OQP_PROXY__PORT=11435
@@ -515,7 +517,7 @@ A generic reverse proxy gives you auth (one shared key) and TLS termination. Thi
 - **Model-aware routing** — requests for models only on certain hosts go to the right host
 - **Embedding cache** — avoid redundant upstream calls for repeated RAG/search embedding requests
 - **Queue visibility** — `X-Queue-Wait-Time`, `X-Queue-Position`, `Retry-After`, `/queue/status`
-- **Failover** — if the primary Ollama host goes down, requests continue on the fallback
+- **Failover** — disabled by default; explicitly configure `routing.fallback: any_healthy` and `routing.retry: true` only for workloads where retrying is safe
 
 If you already have a reverse proxy, put this behind it rather than replacing it.
 

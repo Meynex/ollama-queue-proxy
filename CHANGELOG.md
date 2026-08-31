@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-31
+
+### Fixed
+- Configurable routing policies now normalize aliases for model limits and upstream dispatch, enforce exclusive-model gates, validate positive concurrency values, and release semaphore slots safely when requests are cancelled.
+- Routing defaults are now explicitly no-fallback/no-retry; environment references in YAML are expanded only when the referenced variable exists.
+
 ## [0.3.3] - 2026-06-23
 
 ### Fixed

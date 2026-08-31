@@ -137,12 +137,17 @@ class RoutingTable:
                 state.reachable = False
             logger.warning("routing.poll_failed host=%s error=%s", state.name, e)
 
+    def canonical_model(self, model: str | None) -> str | None:
+        """Return the configured canonical name for a client-facing model."""
+        return self._routing_cfg.aliases.get(model, model) if model else model
+
     def invalidate(self, host_name: str, model: str) -> None:
         """
         Fast-path invalidation: remove model from host's loaded set immediately
         when upstream returns 'model not found'. No lock needed — set.discard is GIL-safe
         for small sets, but we use the lock for consistency.
         """
+        model = self.canonical_model(model) or model
         state = self._states.get(host_name)
         if state:
             state.loaded_models.discard(model)
@@ -160,6 +165,7 @@ class RoutingTable:
         Returns None if no host is available.
         """
         strategy = self._routing_cfg.strategy
+        model = self.canonical_model(model)
 
         if strategy == "model_aware" and model:
             return self._pick_model_aware(model)
@@ -179,7 +185,8 @@ class RoutingTable:
                 self.routing_decisions["model_match"] += 1
             return result
 
-        # Fall back — no host has the model loaded
+        # Fall back — no host has the model loaded. Disabled by default because
+        # sending a model to an arbitrary GPU can cause an unexpected large load.
         fallback = self._routing_cfg.fallback
         if fallback == "any_healthy":
             result = self._pick_round_robin(reachable)
