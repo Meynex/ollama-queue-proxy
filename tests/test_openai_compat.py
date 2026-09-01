@@ -6,6 +6,10 @@ from ollama_queue_proxy.openai_compat import (
     _OPENAI_COMPAT_PATHS,
     is_openai_compat_path,
     rewrite_path,
+    translate_chat_request,
+    wrap_chat_chunk,
+    wrap_chat_response,
+    wrap_error,
     wrap_response,
 )
 
@@ -15,6 +19,43 @@ from ollama_queue_proxy.openai_compat import (
 
 def test_v1_embeddings_is_compat_path():
     assert is_openai_compat_path("/v1/embeddings") is True
+
+
+def test_v1_chat_completions_is_compat_path():
+    assert is_openai_compat_path("/v1/chat/completions") is True
+
+
+def test_rewrite_chat_to_api_chat():
+    assert rewrite_path("/v1/chat/completions") == "/api/chat"
+
+
+def test_translate_chat_preserves_model_messages_and_maps_options():
+    result = translate_chat_request({
+        "model": "alias-model", "messages": [{"role": "user", "content": "hi"}],
+        "stream": True, "max_tokens": 42, "temperature": 0.2,
+    })
+    assert result["model"] == "alias-model"
+    assert result["messages"][0]["content"] == "hi"
+    assert result["options"] == {"num_predict": 42, "temperature": 0.2}
+    assert result["stream"] is True
+
+
+def test_wrap_chat_response_openai_schema_and_usage():
+    result = wrap_chat_response({
+        "model": "llama3", "message": {"role": "assistant", "content": "hello"},
+        "done": True, "prompt_eval_count": 3, "eval_count": 5,
+    })
+    assert result["object"] == "chat.completion"
+    assert result["choices"][0]["message"]["content"] == "hello"
+    assert result["choices"][0]["finish_reason"] == "stop"
+    assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}
+
+
+def test_wrap_chat_chunk_and_error():
+    chunk = wrap_chat_chunk({"model": "llama3", "message": {"content": "hi"}})
+    assert chunk["object"] == "chat.completion.chunk"
+    assert chunk["choices"][0]["delta"]["content"] == "hi"
+    assert wrap_error({"error": "model not found"})["error"]["message"] == "model not found"
 
 
 def test_v1_embeddings_without_leading_slash():

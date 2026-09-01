@@ -158,6 +158,10 @@ logging:
 #   openviking_clients: [openviking]
 #   openviking_priority: high
 #   openviking_header: X-OpenViking
+#
+# OpenAI /v1/chat/completions and /v1/embeddings are rewritten internally to
+# /api/chat and /api/embed. They use this same model routing, queue priority,
+# authentication, keep_alive, and OpenViking policy configuration.
 
 # ---------------------------------------------------------------------------
 # NEW v0.2.0 — Embedding cache
