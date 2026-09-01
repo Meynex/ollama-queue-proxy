@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-31
+
+### Added
+- OpenAI-compatible `/v1/chat/completions` translation with JSON and SSE responses.
+
 ## [0.4.1] - 2026-08-31
 
 ### Added
