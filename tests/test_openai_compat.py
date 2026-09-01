@@ -40,6 +40,47 @@ def test_translate_chat_preserves_model_messages_and_maps_options():
     assert result["stream"] is True
 
 
+def test_translate_chat_pi_content_parts_for_all_message_roles():
+    result = translate_chat_request({
+        "model": "qwen3",
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "System rules"}]},
+            {"role": "developer", "content": [{"type": "text", "text": "Be concise"}]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Describe this image"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/png;base64,abc123",
+                }},
+            ]},
+        ],
+    })
+
+    assert result["messages"] == [
+        {"role": "system", "content": "System rules"},
+        {"role": "developer", "content": "Be concise"},
+        {"role": "user", "content": "Describe this image\n[image_url: data:image/png;base64,abc123]"},
+    ]
+
+
+def test_translate_chat_preserves_string_content_and_unknown_parts():
+    string_content = "already an Ollama-compatible string"
+    result = translate_chat_request({
+        "messages": [
+            {"role": "user", "content": string_content},
+            {"role": "user", "content": [
+                {"type": "audio", "audio": {"format": "wav", "data": "abc"}},
+                {"type": "text", "text": "kept"},
+            ]},
+        ],
+    })
+
+    assert result["messages"][0]["content"] == string_content
+    assert result["messages"][1]["content"] == (
+        '[unsupported_content_part: {"audio":{"data":"abc","format":"wav"},"type":"audio"}]\n'
+        "kept"
+    )
+
+
 def test_wrap_chat_response_openai_schema_and_usage():
     result = wrap_chat_response({
         "model": "llama3", "message": {"role": "assistant", "content": "hello"},
