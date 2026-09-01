@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 _OPENAI_COMPAT_PATHS: frozenset[str] = frozenset({
     "/v1/embeddings", "/v1/chat/completions",
 })
@@ -26,9 +28,47 @@ def rewrite_path(path: str) -> str:
     return path
 
 
+def _content_part_fallback(part: object) -> str:
+    """Serialize an unsupported content part without silently dropping it."""
+    try:
+        return json.dumps(part, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(part)
+
+
+def _content_to_ollama_string(content: object) -> object:
+    """Convert OpenAI content parts to text accepted by Ollama /api/chat."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return _content_part_fallback(content)
+
+    rendered: list[str] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text")
+            rendered.append(text if isinstance(text, str) else _content_part_fallback(part))
+        elif isinstance(part, dict) and part.get("type") == "image_url":
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                rendered.append(f"[image_url: {image_url['url']}]")
+            else:
+                rendered.append(f"[image_url: {_content_part_fallback(image_url)}]")
+        else:
+            rendered.append(f"[unsupported_content_part: {_content_part_fallback(part)}]")
+    return "\n".join(rendered)
+
+
 def translate_chat_request(body: dict) -> dict:
     """Translate OpenAI chat fields while retaining Ollama-native options."""
     result = dict(body)
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        result["messages"] = [
+            {**message, "content": _content_to_ollama_string(message.get("content"))}
+            if isinstance(message, dict) and "content" in message else message
+            for message in messages
+        ]
     # Ollama uses the same stream flag; retaining it selects NDJSON or JSON.
     result["stream"] = bool(body.get("stream", False))
     options = dict(result.pop("options", {}) or {})

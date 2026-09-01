@@ -416,7 +416,7 @@ Returns full queue state, host health, per-client stats, routing decisions, and 
 
 ### OpenAI-compat chat completions
 
-`POST /v1/chat/completions` accepts OpenAI chat requests and translates them to Ollama `/api/chat`. `model` and `messages` are preserved for model-aware routing and all queue, authentication, priority ceilings, OpenViking priority, keep-alive, and failover policies apply to the native request. `stream: true` returns Server-Sent Events (`data: ...`) ending with `data: [DONE]`; buffered responses use the OpenAI `chat.completion` schema. `max_tokens` is translated to Ollama `options.num_predict` and common sampling fields are passed through. Ollama errors are returned in the OpenAI `error` envelope.
+`POST /v1/chat/completions` accepts OpenAI chat requests and translates them to Ollama `/api/chat`. `model` and `messages` are preserved for model-aware routing and all queue, authentication, priority ceilings, OpenViking priority, keep-alive, and failover policies apply to the native request. Message string content is passed through unchanged. OpenAI content-part arrays (including the Pi format) are converted to an Ollama-compatible string for every role, retaining text parts and representing `image_url` parts as `[image_url: ...]`; unknown parts are serialized rather than silently discarded. `stream: true` returns Server-Sent Events (`data: ...`) ending with `data: [DONE]`; buffered responses use the OpenAI `chat.completion` schema. `max_tokens` is translated to Ollama `options.num_predict` and common sampling fields are passed through. Ollama errors are returned in the OpenAI `error` envelope.
 
 ### OpenAI-compat embeddings
 
