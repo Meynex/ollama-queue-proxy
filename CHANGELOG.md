@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-08-31
+
+### Added
+- Prefer active models reported by Ollama `/api/ps` with configurable polling and bonus.
+
 ## [0.4.3] - 2026-08-31
 
 ### Fixed

@@ -145,6 +145,9 @@ logging:
 #   retry: false                     # retries/failover are opt-in
 #   max_retries: 0
 #   model_poll_timeout: 3
+#   active_model_preference: true
+#   active_model_bonus: 1.0
+#   active_model_poll_interval: 5
 #   aliases: {qwen8: qwen3:8b}
 #   # Canonical model -> ordered host preference. Unknown or empty hosts are rejected.
 #   preferred_hosts:
