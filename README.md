@@ -408,10 +408,15 @@ Returns full queue state, host health, per-client stats, routing decisions, and 
 | `GET /metrics` | Token (when enabled) | Prometheus text format |
 | `POST /api/embed` | Token (when enabled) | Native Ollama embedding endpoint |
 | `POST /v1/embeddings` | Token (when enabled) | OpenAI-compat embedding endpoint (see below) |
+| `POST /v1/chat/completions` | Token (when enabled) | OpenAI-compatible chat, translated to `/api/chat` (streaming and buffered) |
 | `POST /queue/pause?tier=low` | Management key | Stop accepting requests for tier |
 | `POST /queue/resume?tier=low` | Management key | Resume tier |
 | `POST /queue/drain` | Management key | Wait for queues to empty |
 | `POST /queue/flush?tier=low` | Management key | Drop all pending requests immediately |
+
+### OpenAI-compat chat completions
+
+`POST /v1/chat/completions` accepts OpenAI chat requests and translates them to Ollama `/api/chat`. `model` and `messages` are preserved for model-aware routing and all queue, authentication, priority ceilings, OpenViking priority, keep-alive, and failover policies apply to the native request. `stream: true` returns Server-Sent Events (`data: ...`) ending with `data: [DONE]`; buffered responses use the OpenAI `chat.completion` schema. `max_tokens` is translated to Ollama `options.num_predict` and common sampling fields are passed through. Ollama errors are returned in the OpenAI `error` envelope.
 
 ### OpenAI-compat embeddings
 

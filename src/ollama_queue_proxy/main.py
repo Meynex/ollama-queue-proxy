@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .auth import AuthManager
 from .cache import EmbeddingCache
@@ -22,7 +22,15 @@ from .concurrency import ClientConcurrencyManager
 from .config import Config, load_config
 from .hosts import HostManager
 from .middleware import RequestContextMiddleware, get_client_id, parse_priority
-from .openai_compat import is_openai_compat_path, rewrite_path, wrap_response
+from .openai_compat import (
+    is_openai_compat_path,
+    rewrite_path,
+    translate_chat_request,
+    wrap_chat_chunk,
+    wrap_chat_response,
+    wrap_error,
+    wrap_response,
+)
 from .proxy import dispatch_request, read_body
 from .queue import PriorityQueueManager, QueueFull, QueueItem, QueuePaused, RequestExpired
 from .routes.queue import router as queue_router
@@ -223,7 +231,8 @@ async def _enqueue_request(
     state: AppState,
     reentries: int = 0,
     path_override: str | None = None,
-) -> JSONResponse:
+    body_transform=None,
+) -> JSONResponse | StreamingResponse:
     """
     Buffer the request body, enqueue it, and await dispatch. Used by both the main
     proxy handler and injection port handlers to share queue/worker logic.
@@ -243,6 +252,13 @@ async def _enqueue_request(
     body, body_err = await read_body(request, state.config.proxy.max_request_body_mb)
     if body_err:
         return body_err
+    if body_transform is not None:
+        try:
+            parsed_body = json.loads(body) if body else {}
+            if isinstance(parsed_body, dict):
+                body = json.dumps(body_transform(parsed_body), separators=(",", ":")).encode()
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     # keep_alive injection — runs before cache check so cached responses also reflect
     # the injected value (though for embeddings keep_alive has no effect upstream)
@@ -421,22 +437,58 @@ async def proxy_handler(request: Request, path: str):
         requested_priority = state.config.routing.openviking_priority
     tier = state.auth_manager.enforce_priority_ceiling(requested_priority, key_cfg)
 
-    # OpenAI-compat path handling: rewrite path before enqueue, wrap response after
+    # OpenAI-compat path handling: rewrite before enqueue and wrap afterward.
     compat_path = "/" + path
     if is_openai_compat_path(compat_path):
         native_path = rewrite_path(compat_path)
+        is_chat = compat_path == "/v1/chat/completions"
         response = await _enqueue_request(
             request=request,
             client_id=client_id,
             tier=tier,
             state=state,
             path_override=native_path,
+            body_transform=translate_chat_request if is_chat else None,
         )
-        # Only wrap successful JSON responses; pass through errors unchanged
-        if isinstance(response, JSONResponse) and response.status_code == 200:
-            ollama_body = json.loads(response.body)
-            wrapped = wrap_response(ollama_body)
-            return JSONResponse(content=wrapped, status_code=200)
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() not in {"content-length", "content-type"}}
+        if is_chat and isinstance(response, StreamingResponse):
+            async def chat_stream():
+                pending = b""
+                async for chunk in response.body_iterator:
+                    pending += chunk
+                    lines = pending.split(b"\n")
+                    pending = lines.pop()
+                    for line in lines:
+                        if not line.strip():
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        payload = json.dumps(wrap_chat_chunk(item), separators=(",", ":"))
+                        yield f"data: {payload}\n\n".encode()
+                if pending.strip():
+                    try:
+                        payload = json.dumps(
+                            wrap_chat_chunk(json.loads(pending)), separators=(",", ":")
+                        )
+                        yield f"data: {payload}\n\n".encode()
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                yield b"data: [DONE]\n\n"
+            return StreamingResponse(chat_stream(), status_code=response.status_code,
+                                     media_type="text/event-stream", headers=headers)
+        if isinstance(response, JSONResponse):
+            try:
+                body_data = json.loads(response.body)
+            except (json.JSONDecodeError, TypeError):
+                body_data = {}
+            if response.status_code == 200:
+                wrapped = wrap_chat_response(body_data) if is_chat else wrap_response(body_data)
+            else:
+                wrapped = wrap_error(body_data)
+            return JSONResponse(content=wrapped, status_code=response.status_code, headers=headers)
         return response
 
     return await _enqueue_request(
