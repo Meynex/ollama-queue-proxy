@@ -222,12 +222,23 @@ routing:
   retry: false                      # retries/failover are opt-in
   max_retries: 0
   model_poll_timeout: 3
+  active_model_preference: true  # prefer models currently loaded in /api/ps
+  active_model_bonus: 1.0         # positive weight multiplier for active hosts
+  active_model_poll_interval: 5   # seconds between /api/ps polls
   # Canonical model -> ordered host preference (hosts must be configured above).
   preferred_hosts:
     qwen3:8b: [rtx]
     OpenViking-20B: [v100]
     OpenViking-Embedding: [v100]
 ```
+
+`active_model_preference` is enabled by default. The proxy keeps installed models from
+`/api/tags` separate from currently loaded models from `/api/ps`; when both are eligible,
+active hosts are preferred. `active_model_bonus` multiplies their weighted round-robin
+priority. A missing or failing `/api/ps` is treated as an empty active inventory and does
+not make an otherwise healthy host unavailable. Explicit `preferred_hosts` remain
+authoritative. OpenViking requests never use active-model preference to automatically
+switch or fall back models.
 
 `preferred_hosts` is optional and only applies to `model_aware` routing. Aliases are
 canonicalized before lookup, so client aliases can be used as keys. The listed hosts

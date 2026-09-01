@@ -261,6 +261,27 @@ def test_routing_model_aware(tmp_path):
     assert cfg.routing.model_poll_timeout == 5
 
 
+def test_active_model_routing_config(tmp_path):
+    data = base_config()
+    data["routing"] = {
+        "active_model_preference": False,
+        "active_model_bonus": 2.5,
+        "active_model_poll_interval": 9,
+    }
+    cfg = load_config(write_config(tmp_path, data))
+    assert cfg.routing.active_model_preference is False
+    assert cfg.routing.active_model_bonus == 2.5
+    assert cfg.routing.active_model_poll_interval == 9
+
+
+@pytest.mark.parametrize("field", ["active_model_bonus", "active_model_poll_interval"])
+def test_active_model_routing_config_rejects_non_positive(tmp_path, field):
+    data = base_config()
+    data["routing"] = {field: 0}
+    with pytest.raises(SystemExit):
+        load_config(write_config(tmp_path, data))
+
+
 def test_routing_invalid_strategy_exits(tmp_path):
     data = base_config()
     data["routing"] = {"strategy": "least_loaded"}

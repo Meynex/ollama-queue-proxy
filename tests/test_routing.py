@@ -80,6 +80,37 @@ def test_round_robin_weighted_2_to_1():
 # ---------------------------------------------------------------------------
 
 
+def test_active_model_preferred_over_installed_model():
+    table = make_table([
+        {"url": "http://installed:11434", "name": "installed", "weight": 1},
+        {"url": "http://active:11434", "name": "active", "weight": 1},
+    ])
+    table._states["installed"].loaded_models = {"qwen3:8b"}
+    table._states["active"].loaded_models = {"qwen3:8b"}
+    table._states["active"].active_models = {"qwen3:8b"}
+    assert table.pick("qwen3:8b").name == "active"
+
+
+def test_preferred_host_remains_authoritative_over_active_preference():
+    table = make_table([
+        {"url": "http://preferred:11434", "name": "preferred", "weight": 1},
+        {"url": "http://active:11434", "name": "active", "weight": 1},
+    ])
+    for state in table._states.values():
+        state.loaded_models = {"qwen3:8b"}
+        state.active_models = {"qwen3:8b"} if state.name == "active" else set()
+    table._routing_cfg.preferred_hosts = {"qwen3:8b": ["preferred"]}
+    assert table.pick("qwen3:8b").name == "preferred"
+
+
+def test_active_model_preference_supports_aliases():
+    table = make_table([{"url": "http://active:11434", "name": "active", "weight": 1}])
+    table._states["active"].loaded_models = {"qwen3:8b"}
+    table._states["active"].active_models = {"qwen3:8b"}
+    table._routing_cfg.aliases = {"qwen8": "qwen3:8b"}
+    assert table.pick("qwen8").name == "active"
+
+
 def test_preferred_host_wins_when_multiple_hosts_have_model():
     table = make_table([
         {"url": "http://v100:11434", "name": "v100", "weight": 1},
@@ -251,20 +282,41 @@ def test_invalidate_model_not_present_no_error():
 
 
 @pytest.mark.asyncio
-async def test_poll_host_updates_models():
+async def test_poll_host_updates_models_and_active_inventory():
+
     table = make_table([{"url": "http://a:11434", "name": "a", "weight": 1}])
     state = table._states["a"]
 
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"models": [{"name": "llama3"}, {"name": "mistral"}]}
-    mock_resp.raise_for_status = MagicMock()
+    tags_resp = MagicMock()
+    tags_resp.json.return_value = {"models": [{"name": "llama3"}, {"name": "mistral"}]}
+    tags_resp.raise_for_status = MagicMock()
+    ps_resp = MagicMock()
+    ps_resp.json.return_value = {"models": [{"name": "llama3"}]}
+    ps_resp.raise_for_status = MagicMock()
 
     table._client = AsyncMock()
-    table._client.get.return_value = mock_resp
+    table._client.get.side_effect = [tags_resp, ps_resp]
 
     await table._poll_host(state)
 
     assert state.loaded_models == {"llama3", "mistral"}
+    assert state.active_models == {"llama3"}
+    assert state.reachable is True
+
+
+@pytest.mark.asyncio
+async def test_active_poll_failure_gracefully_degrades():
+    table = make_table([{"url": "http://a:11434", "name": "a", "weight": 1}])
+    state = table._states["a"]
+    state.loaded_models = {"llama3"}
+    state.reachable = True
+    table._client = AsyncMock()
+    table._client.get.side_effect = Exception("/api/ps unavailable")
+
+    await table._poll_active_models(state)
+
+    assert state.active_models == set()
+    assert state.loaded_models == {"llama3"}
     assert state.reachable is True
 
 

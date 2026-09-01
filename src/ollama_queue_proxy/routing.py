@@ -22,6 +22,7 @@ class HostRoutingState:
     weight: int
     model_sync_interval: int
     loaded_models: set[str] = field(default_factory=set)
+    active_models: set[str] = field(default_factory=set)
     reachable: bool = True
     # v0.3 placeholder fields (not yet populated)
     # vram_total_gb: float | None = None
@@ -70,6 +71,7 @@ class RoutingTable:
 
         self._poll_tasks: list[asyncio.Task] = []
 
+
     async def startup_probe(self) -> None:
         """
         Synchronous initial poll of all hosts. Fail-fast if no host responds.
@@ -102,8 +104,8 @@ class RoutingTable:
 
     def start_background_pollers(self) -> None:
         for state in self._states.values():
-            task = asyncio.create_task(self._poll_loop(state))
-            self._poll_tasks.append(task)
+            self._poll_tasks.append(asyncio.create_task(self._poll_loop(state)))
+            self._poll_tasks.append(asyncio.create_task(self._active_poll_loop(state)))
 
     async def stop(self) -> None:
         for task in self._poll_tasks:
@@ -115,27 +117,48 @@ class RoutingTable:
     async def _poll_loop(self, state: HostRoutingState) -> None:
         while True:
             await asyncio.sleep(state.model_sync_interval)
-            await self._poll_host(state)
+            await self._poll_models(state)
+
+    async def _active_poll_loop(self, state: HostRoutingState) -> None:
+        while True:
+            await asyncio.sleep(self._routing_cfg.active_model_poll_interval)
+            await self._poll_active_models(state)
 
     async def _poll_host(self, state: HostRoutingState) -> None:
+        """Poll installed inventory and active inventory during startup/tests."""
+        await self._poll_models(state)
+        if state.reachable:
+            await self._poll_active_models(state)
+
+    async def _poll_models(self, state: HostRoutingState) -> None:
         try:
-            resp = await self._client.get(
-                f"{state.url}/api/tags",
-                timeout=self._poll_timeout,
-            )
+            resp = await self._client.get(f"{state.url}/api/tags", timeout=self._poll_timeout)
             resp.raise_for_status()
             data = resp.json()
-            models = {m["name"] for m in data.get("models", [])}
+            models = {m["name"] for m in data.get("models", []) if "name" in m}
             async with self._lock:
                 state.loaded_models = models
                 state.reachable = True
-            logger.debug(
-                "routing.poll host=%s models=%d", state.name, len(models)
-            )
+            logger.debug("routing.poll host=%s models=%d", state.name, len(models))
         except Exception as e:
             async with self._lock:
                 state.reachable = False
             logger.warning("routing.poll_failed host=%s error=%s", state.name, e)
+
+    async def _poll_active_models(self, state: HostRoutingState) -> None:
+        try:
+            resp = await self._client.get(f"{state.url}/api/ps", timeout=self._poll_timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            active = {m["name"] for m in data.get("models", []) if "name" in m}
+            async with self._lock:
+                state.active_models = active
+            logger.debug("routing.active_poll host=%s models=%d", state.name, len(active))
+        except Exception as e:
+            # /api/ps is optional on older Ollama versions; tags reachability remains valid.
+            async with self._lock:
+                state.active_models = set()
+            logger.debug("routing.active_poll_unavailable host=%s error=%s", state.name, e)
 
     def canonical_model(self, model: str | None) -> str | None:
         """Return the configured canonical name for a client-facing model."""
@@ -158,6 +181,7 @@ class RoutingTable:
         state = self._states.get(host_name)
         if state:
             state.loaded_models.discard(model)
+            state.active_models.discard(model)
             logger.debug(
                 "routing.invalidated host=%s model=%s", host_name, model
             )
@@ -208,13 +232,24 @@ class RoutingTable:
     ) -> HostRoutingState | None:
         """Pick the first configured preferred host, then balance the rest."""
         by_name = {state.name: state for state in candidates}
+        # Explicit host preference remains authoritative, including for fallback.
         for host_name in self._routing_cfg.preferred_hosts.get(model, []):
             state = by_name.get(host_name)
             if state:
                 return state
+
+        if self._routing_cfg.active_model_preference:
+            active = [s for s in candidates if model in s.active_models]
+            if active:
+                return self._pick_round_robin(
+                    active,
+                    weight_multiplier=self._routing_cfg.active_model_bonus,
+                )
         return self._pick_round_robin(candidates)
 
-    def _pick_round_robin(self, candidates: list[HostRoutingState]) -> HostRoutingState | None:
+    def _pick_round_robin(
+        self, candidates: list[HostRoutingState], weight_multiplier: float = 1.0
+    ) -> HostRoutingState | None:
         """
         Deterministic weighted round-robin over the given candidates.
         Builds a weight-expanded sequence and selects by counter modulo total weight.
@@ -225,7 +260,7 @@ class RoutingTable:
         # Build the weighted sequence (deterministic, not stochastic)
         weighted: list[HostRoutingState] = []
         for state in candidates:
-            weighted.extend([state] * state.weight)
+            weighted.extend([state] * max(1, round(state.weight * weight_multiplier)))
 
         if not weighted:
             return None

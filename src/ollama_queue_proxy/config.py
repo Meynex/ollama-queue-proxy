@@ -167,6 +167,9 @@ class RoutingConfig(BaseModel):
     retry: bool = False
     max_retries: int = 0
     model_poll_timeout: int = 3
+    active_model_preference: bool = True
+    active_model_bonus: float = 1.0
+    active_model_poll_interval: int = 5
     # Model names are deliberately config-driven (including aliases used by clients).
     aliases: dict[str, str] = {}
     # Canonical model -> host names, in strict preference order.
@@ -178,6 +181,20 @@ class RoutingConfig(BaseModel):
     openviking_clients: list[str] = []
     openviking_priority: Literal["high", "normal", "low"] = "high"
     openviking_header: str = "X-OpenViking"
+
+    @field_validator("active_model_poll_interval")
+    @classmethod
+    def positive_active_poll_interval(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("routing.active_model_poll_interval must be >= 1 second")
+        return v
+
+    @field_validator("active_model_bonus")
+    @classmethod
+    def positive_active_bonus(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("routing.active_model_bonus must be positive")
+        return v
 
     @field_validator("max_retries", "v100_concurrency")
     @classmethod
