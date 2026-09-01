@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-31
+
+### Fixed
+- Translate OpenAI/Pi message content-part arrays into Ollama-compatible message strings.
+
 ## [0.4.2] - 2026-08-31
 
 ### Added
