@@ -202,7 +202,10 @@ async def dispatch_request(
             break
         attempted.add(host.name)
 
+        slot_owned = False
         try:
+            await host_manager.acquire_slot(host)
+            slot_owned = True
             resp = await client.request(
                 method=method,
                 url=f"{host.url}{path}" + (f"?{query}" if query else ""),
@@ -245,7 +248,7 @@ async def dispatch_request(
             }
 
             if is_streaming:
-                async def stream_gen(r=resp):
+                async def stream_gen(r=resp, reserved_host=host):
                     try:
                         async for chunk in r.aiter_bytes():
                             yield chunk
@@ -254,7 +257,11 @@ async def dispatch_request(
                         # disconnects mid-stream the generator is abandoned and
                         # GC may never run, leaking the underlying connection.
                         await r.aclose()
+                        host_manager.release_slot(reserved_host)
 
+                # The stream owns the host slot until the client disconnects or
+                # the upstream sends its final bytes.
+                slot_owned = False
                 return StreamingResponse(
                     stream_gen(),
                     status_code=resp.status_code,
@@ -294,6 +301,9 @@ async def dispatch_request(
             if not config.routing.retry or retries > config.routing.max_retries:
                 break
             continue
+        finally:
+            if slot_owned:
+                host_manager.release_slot(host)
 
     return JSONResponse(
         status_code=503,

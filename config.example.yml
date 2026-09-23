@@ -19,10 +19,9 @@
 proxy:
   host: "0.0.0.0"
   port: 11435
-  max_concurrent: 2          # concurrent requests dispatched to Ollama at once.
-                             # Set this to match Ollama's OLLAMA_NUM_PARALLEL (default 1 in Ollama;
-                             # the proxy default of 2 assumes you've set OLLAMA_NUM_PARALLEL ≥ 2).
-                             # Higher values increase throughput but also GPU memory pressure.
+  max_concurrent: 3          # fallback/global queue worker count.
+                             # When hosts define max_concurrent, the worker pool expands
+                             # to the sum of the per-host GPU limits.
   allow_model_management: false  # block /api/pull, /api/push, /api/delete, /api/create, /api/copy
   drain_timeout: 30          # seconds to wait for in-flight requests on shutdown
   max_request_body_mb: 50    # reject bodies larger than this before buffering
@@ -38,10 +37,12 @@ ollama:
       name: "rtx"
       weight: 1              # NEW v0.2.0: relative weight for weighted round-robin (default 1)
       model_sync_interval: 30  # NEW v0.2.0: seconds between /api/tags polls for routing table
+      max_concurrent: 2      # independent GPU slots for this host (0 = unlimited)
     # - url: "http://ollama-v100:11434"
     #   name: "v100"
     #   weight: 1
     #   model_sync_interval: 30
+    #   max_concurrent: 1      # keep a large V100 model single-flight
   health_check_interval: 30  # seconds between recovery checks on unhealthy hosts
   request_timeout: 300       # seconds before upstream timeout
 

@@ -9,9 +9,12 @@ from ollama_queue_proxy.concurrency import ClientConcurrencyManager
 from ollama_queue_proxy.config import (
     ApiKeyConfig,
     ConcurrencyConfig,
+    HostConfig,
+    OllamaConfig,
     RoutingConfig,
     _expand_env_references,
 )
+from ollama_queue_proxy.hosts import HostManager
 
 
 def test_router_policy_defaults_are_safe():
@@ -19,6 +22,40 @@ def test_router_policy_defaults_are_safe():
     assert cfg.fallback == "none"
     assert cfg.retry is False
     assert cfg.max_retries == 0
+
+
+def test_host_concurrency_defaults_to_unlimited():
+    assert HostConfig(url="http://a", name="a").max_concurrent == 0
+
+
+def test_host_worker_capacity_sums_gpu_limits():
+    manager = HostManager(OllamaConfig(hosts=[
+        HostConfig(url="http://a", name="a", max_concurrent=2),
+        HostConfig(url="http://b", name="b", max_concurrent=1),
+    ]))
+    assert manager.worker_capacity(2) == 3
+
+
+@pytest.mark.asyncio
+async def test_host_gpu_slots_are_independent():
+    manager = HostManager(OllamaConfig(hosts=[
+        HostConfig(url="http://a", name="a", max_concurrent=1),
+        HostConfig(url="http://b", name="b", max_concurrent=1),
+    ]))
+    a, b = manager.hosts
+    await manager.acquire_slot(a)
+    waiting = asyncio.create_task(manager.acquire_slot(a))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    await manager.acquire_slot(b)
+    assert a.active_requests == 1
+    assert b.active_requests == 1
+
+    manager.release_slot(a)
+    await asyncio.wait_for(waiting, timeout=1)
+    manager.release_slot(a)
+    manager.release_slot(b)
 
 
 def test_router_policy_alias_and_limits():

@@ -18,19 +18,27 @@ logger = logging.getLogger(__name__)
 class OllamaHost:
     url: str
     name: str
+    max_concurrent: int = 0
     healthy: bool = True
     models: list[str] = field(default_factory=list)
     last_checked: datetime | None = None
     requests_handled: int = 0
     failures: int = 0
+    active_requests: int = 0
 
 
 class HostManager:
     def __init__(self, config: OllamaConfig) -> None:
         self._config = config
         self.hosts: list[OllamaHost] = [
-            OllamaHost(url=h.url, name=h.name) for h in config.hosts
+            OllamaHost(url=h.url, name=h.name, max_concurrent=h.max_concurrent)
+            for h in config.hosts
         ]
+        self._slots: dict[str, asyncio.Semaphore] = {
+            h.name: asyncio.Semaphore(h.max_concurrent)
+            for h in self.hosts
+            if h.max_concurrent > 0
+        }
         self._check_task: asyncio.Task | None = None
 
     async def startup_check(self, client: httpx.AsyncClient) -> None:
@@ -82,6 +90,25 @@ class HostManager:
             host.last_checked = datetime.now(timezone.utc)
             if was_healthy:
                 logger.warning("host.unhealthy name=%s error=%s", host.name, e)
+
+    async def acquire_slot(self, host: OllamaHost) -> None:
+        """Reserve this host's GPU slot; unlimited hosts remain backward compatible."""
+        slot = getattr(self, "_slots", {}).get(host.name)
+        if slot is not None:
+            await slot.acquire()
+        host.active_requests += 1
+
+    def release_slot(self, host: OllamaHost) -> None:
+        """Release a previously reserved host GPU slot."""
+        host.active_requests = max(0, host.active_requests - 1)
+        slot = getattr(self, "_slots", {}).get(host.name)
+        if slot is not None:
+            slot.release()
+
+    def worker_capacity(self, fallback: int) -> int:
+        """Return enough queue workers to use independently capped GPU hosts."""
+        limits = [host.max_concurrent for host in self.hosts if host.max_concurrent > 0]
+        return max(fallback, sum(limits)) if limits else fallback
 
     def select_host(self, model: str | None) -> OllamaHost | None:
         """Return first healthy host that has the requested model (if specified)."""

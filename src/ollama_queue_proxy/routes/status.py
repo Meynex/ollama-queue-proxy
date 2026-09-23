@@ -63,6 +63,8 @@ async def queue_status(request: Request):
             "last_checked": host.last_checked.isoformat() if host.last_checked else None,
             "requests_handled": host.requests_handled,
             "failures": host.failures,
+            "max_concurrent": host.max_concurrent,
+            "active_requests": host.active_requests,
         })
 
     uptime = (datetime.now(timezone.utc) - state.start_time).total_seconds()
@@ -88,7 +90,8 @@ async def queue_status(request: Request):
         "queue": queue_data,
         "concurrency": {
             "active": q_mgr.active_count(),
-            "max": state.config.proxy.max_concurrent,
+            "max": q_mgr._max_concurrent,
+            "global_configured_max": state.config.proxy.max_concurrent,
         },
         "hosts": hosts_data,
         "clients": clients_data,

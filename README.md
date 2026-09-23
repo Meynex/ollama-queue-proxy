@@ -210,10 +210,12 @@ ollama:
       name: "rtx"
       weight: 2                    # gets 2x the traffic of weight-1 hosts
       model_sync_interval: 30      # seconds between /api/tags polls
+      max_concurrent: 2            # independent GPU slots on this host
     - url: "http://ollama-v100:11434"
       name: "v100"
       weight: 1
       model_sync_interval: 30
+      max_concurrent: 1            # single-flight for a large model
   health_check_interval: 30
 
 routing:
@@ -231,6 +233,12 @@ routing:
     OpenViking-20B: [v100]
     OpenViking-Embedding: [v100]
 ```
+
+`ollama.hosts[].max_concurrent` optionally limits each GPU host independently; `0`
+keeps the legacy unlimited-per-host behavior. The queue worker pool expands to the
+sum of configured host limits, so a busy V100 cannot consume the RTX host's slots.
+The global `proxy.max_concurrent` remains the fallback when hosts have no explicit
+limit.
 
 `active_model_preference` is enabled by default. The proxy keeps installed models from
 `/api/tags` separate from currently loaded models from `/api/ps`; when both are eligible,

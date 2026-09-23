@@ -16,6 +16,9 @@ class HostConfig(BaseModel):
     name: str
     weight: int = 1
     model_sync_interval: int = 30
+    # 0 keeps the legacy unlimited-per-host behavior. Set this per GPU host
+    # when a shared router should allow independent GPU concurrency.
+    max_concurrent: int = 0
 
     @field_validator("name")
     @classmethod
@@ -37,6 +40,15 @@ class HostConfig(BaseModel):
         if v < 1:
             raise ValueError(
                 f"ollama.hosts[].model_sync_interval must be >= 1 second, got {v}"
+            )
+        return v
+
+    @field_validator("max_concurrent")
+    @classmethod
+    def non_negative_concurrent(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"ollama.hosts[].max_concurrent must be non-negative, got {v}"
             )
         return v
 

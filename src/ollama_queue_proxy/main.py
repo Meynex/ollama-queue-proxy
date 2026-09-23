@@ -97,7 +97,11 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient()
     host_manager = HostManager(config.ollama)
     auth_manager = AuthManager(config.auth)
-    queue_manager = PriorityQueueManager(config.queue, config.proxy.max_concurrent)
+    # A global queue worker cap of 2 would serialize independently configured
+    # GPU hosts. Host caps expand the worker pool; each host still enforces its
+    # own semaphore in dispatch_request().
+    queue_workers = host_manager.worker_capacity(config.proxy.max_concurrent)
+    queue_manager = PriorityQueueManager(config.queue, queue_workers)
     webhook_manager = WebhookManager(config.webhooks, http_client)
 
     # Wire webhook events from queue
