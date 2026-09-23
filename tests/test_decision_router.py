@@ -13,18 +13,22 @@ async def test_laya_choice_sets_priority_when_confident():
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["payload"] = request.read()
+        seen["authorization"] = request.headers.get("authorization")
         return httpx.Response(
             200,
             json={"answers": {"priority": {"choice": "high", "confidence": 0.94}}},
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        router = DecisionRouter(DecisionRouterConfig(enabled=True), client)
+        router = DecisionRouter(
+            DecisionRouterConfig(enabled=True, api_key="sidecar-secret"), client
+        )
         result = await router.classify_priority(
             "/api/chat", b'{"model":"llama3","messages":[]}'
         )
 
     assert result == "high"
+    assert seen["authorization"] == "Bearer sidecar-secret"
     assert b'"priority"' in seen["payload"]
 
 

@@ -8,7 +8,7 @@ import sys
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 
 class HostConfig(BaseModel):
@@ -308,6 +308,7 @@ class DecisionRouterConfig(BaseModel):
 
     enabled: bool = False
     url: str = "http://laya:8000/v1/systemone"
+    api_key: SecretStr | None = None
     timeout_ms: int = 100
     fail_open: bool = True
     min_confidence: float = 0.85

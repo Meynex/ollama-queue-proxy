@@ -219,6 +219,8 @@ logging:
 # decision_router:
 #   enabled: true
 #   url: "http://laya:8000/v1/systemone"
+#   # Optional; prefer OQP_DECISION_ROUTER__API_KEY instead of storing it here.
+#   # api_key: "replace-me"
 #   timeout_ms: 100
 #   fail_open: true
 #   min_confidence: 0.85

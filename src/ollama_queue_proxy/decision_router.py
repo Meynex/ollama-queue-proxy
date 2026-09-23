@@ -63,9 +63,15 @@ class DecisionRouter:
         }
 
         try:
+            headers = {}
+            if self._config.api_key is not None:
+                headers["Authorization"] = (
+                    f"Bearer {self._config.api_key.get_secret_value()}"
+                )
             response = await self._client.post(
                 self._config.url,
                 json=payload,
+                headers=headers,
                 timeout=self._config.timeout_ms / 1000,
             )
             response.raise_for_status()
