@@ -28,6 +28,11 @@ def test_host_concurrency_defaults_to_unlimited():
     assert HostConfig(url="http://a", name="a").max_concurrent == 0
 
 
+def test_host_concurrency_rejects_negative_limit():
+    with pytest.raises(ValidationError):
+        HostConfig(url="http://a", name="a", max_concurrent=-1)
+
+
 def test_host_worker_capacity_sums_gpu_limits():
     manager = HostManager(OllamaConfig(hosts=[
         HostConfig(url="http://a", name="a", max_concurrent=2),
