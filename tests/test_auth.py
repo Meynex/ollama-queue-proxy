@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from pydantic import ValidationError
 
-from ollama_queue_proxy.auth import AuthManager
+from ollama_queue_proxy.auth import AuthManager, require_scope
 from ollama_queue_proxy.config import ApiKeyConfig, AuthConfig, RateLimitConfig
 
 from .conftest import ADMIN_KEY, ADMIN_KEY_CFG, LOW_KEY, LOW_KEY_CFG, USER_KEY, USER_KEY_CFG
@@ -54,6 +57,41 @@ def test_legacy_management_flag_upgrades_scope():
 def test_conflicting_scope_and_legacy_management_are_rejected():
     with pytest.raises(ValidationError):
         ApiKeyConfig(key="bad-key", client_id="bad", scope="read", management=True)
+
+
+@pytest.mark.asyncio
+async def test_require_scope_denies_read_key_for_inference():
+    request = MagicMock()
+    request.state.request_id = "scope-test"
+    state = SimpleNamespace(
+        auth_manager=SimpleNamespace(
+            authenticate=AsyncMock(return_value=(
+                ApiKeyConfig(key="read-key", client_id="read", scope="read"),
+                None,
+            ))
+        ),
+        config=SimpleNamespace(auth=SimpleNamespace(enabled=True)),
+    )
+    request.app.state.oqp = state
+
+    response = await require_scope(request, "inference")
+    assert response is not None
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_require_scope_allows_management_for_legacy_admin_key():
+    request = MagicMock()
+    request.state.request_id = "scope-test"
+    state = SimpleNamespace(
+        auth_manager=SimpleNamespace(
+            authenticate=AsyncMock(return_value=(ADMIN_KEY_CFG, None))
+        ),
+        config=SimpleNamespace(auth=SimpleNamespace(enabled=True)),
+    )
+    request.app.state.oqp = state
+
+    assert await require_scope(request, "management") is None
 
 
 def test_priority_ceiling_low_key_high_request():
