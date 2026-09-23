@@ -70,6 +70,15 @@ class QueueConfig(BaseModel):
     normal: TierConfig = TierConfig(max_depth=100, max_wait=300)
     low: TierConfig = TierConfig(max_depth=200, max_wait=600)
     overflow_status_code: Literal[503, 429] = 503
+    # Queued bodies remain buffered in memory until a worker dequeues them.
+    max_queued_mb: int = 512
+
+    @field_validator("max_queued_mb")
+    @classmethod
+    def positive_queued_bytes_cap(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("queue.max_queued_mb must be at least 1 MB")
+        return v
 
 
 class WebhookConfig(BaseModel):

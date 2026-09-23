@@ -12,21 +12,29 @@ from ollama_queue_proxy.queue import (
     PriorityQueueManager,
     QueueFull,
     QueueFlushed,
+    QueueOverCapacity,
     QueueItem,
     QueuePaused,
 )
 
 
-def make_queue_mgr(max_concurrent: int = 2, high_depth=5, normal_depth=10, low_depth=20) -> PriorityQueueManager:
+def make_queue_mgr(
+    max_concurrent: int = 2,
+    high_depth=5,
+    normal_depth=10,
+    low_depth=20,
+    max_queued_mb: int = 512,
+) -> PriorityQueueManager:
     config = QueueConfig(
         high=TierConfig(max_depth=high_depth, max_wait=60),
         normal=TierConfig(max_depth=normal_depth, max_wait=120),
         low=TierConfig(max_depth=low_depth, max_wait=300),
+        max_queued_mb=max_queued_mb,
     )
     return PriorityQueueManager(config, max_concurrent)
 
 
-def make_item(tier: str, request_id: str = "test") -> QueueItem:
+def make_item(tier: str, request_id: str = "test", nbytes: int = 0) -> QueueItem:
     loop = asyncio.get_event_loop()
     future = loop.create_future()
 
@@ -39,7 +47,47 @@ def make_item(tier: str, request_id: str = "test") -> QueueItem:
         request_id=request_id,
         future=future,
         dispatch_fn=noop,
+        nbytes=nbytes,
     )
+
+
+@pytest.mark.asyncio
+async def test_queued_bytes_are_capped_and_reported():
+    mgr = make_queue_mgr(max_queued_mb=1)
+    await mgr.enqueue(make_item("normal", "a", nbytes=700_000))
+    assert mgr.queued_bytes() == 700_000
+    with pytest.raises(QueueOverCapacity):
+        await mgr.enqueue(make_item("normal", "b", nbytes=400_000))
+
+
+@pytest.mark.asyncio
+async def test_oversized_body_allowed_when_queue_empty():
+    mgr = make_queue_mgr(max_queued_mb=1)
+    assert await mgr.enqueue(make_item("normal", "huge", nbytes=2 * 1024 * 1024)) == 1
+
+
+@pytest.mark.asyncio
+async def test_queued_bytes_released_on_flush():
+    mgr = make_queue_mgr(max_queued_mb=1)
+    item = make_item("normal", "flush", nbytes=700_000)
+    await mgr.enqueue(item)
+    await mgr.flush("normal")
+    assert mgr.queued_bytes() == 0
+
+
+@pytest.mark.asyncio
+async def test_queued_bytes_released_on_dequeue():
+    mgr = make_queue_mgr(max_queued_mb=1)
+    await mgr.enqueue(make_item("normal", "dequeue", nbytes=700_000))
+    mgr.start_workers()
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if mgr.queued_bytes() == 0:
+                break
+    finally:
+        await mgr.stop_workers()
+    assert mgr.queued_bytes() == 0
 
 
 @pytest.mark.asyncio

@@ -47,6 +47,7 @@ ollama:
   request_timeout: 300       # seconds before upstream timeout
 
 queue:
+  max_queued_mb: 512       # total buffered request bodies waiting in the queue
   high:
     max_depth: 50
     max_wait: 120            # seconds before stale request is dropped

@@ -32,7 +32,14 @@ from .openai_compat import (
     wrap_response,
 )
 from .proxy import dispatch_request, read_body
-from .queue import PriorityQueueManager, QueueFull, QueueItem, QueuePaused, RequestExpired
+from .queue import (
+    PriorityQueueManager,
+    QueueFull,
+    QueueItem,
+    QueueOverCapacity,
+    QueuePaused,
+    RequestExpired,
+)
 from .routes.queue import router as queue_router
 from .routes.status import router as status_router
 from .routing import RoutingTable
@@ -355,20 +362,22 @@ async def _enqueue_request(
         request_id=request_id,
         future=future,
         dispatch_fn=dispatch_fn,
+        nbytes=len(body),
     )
 
     try:
         position = await state.queue_manager.enqueue(item)
-    except QueueFull as e:
+    except (QueueFull, QueueOverCapacity) as e:
         retry_after = state.queue_manager.retry_after(e.tier)
         if client_id:
             cs = state.client_stats.setdefault(
                 client_id, {"description": None, "processed": 0, "rejected": 0}
             )
             cs["rejected"] = cs.get("rejected", 0) + 1
+        error = "queue over capacity (bytes)" if isinstance(e, QueueOverCapacity) else "queue full"
         return JSONResponse(
             status_code=e.status_code,
-            content={"error": "queue full", "request_id": request_id},
+            content={"error": error, "request_id": request_id},
             headers={"Retry-After": str(retry_after)},
         )
     except QueuePaused as e:

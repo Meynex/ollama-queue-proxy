@@ -93,6 +93,8 @@ async def queue_status(request: Request):
             "max": q_mgr._max_concurrent,
             "global_configured_max": state.config.proxy.max_concurrent,
         },
+        "queued_bytes": q_mgr.queued_bytes(),
+        "max_queued_bytes": state.config.queue.max_queued_mb * 1024 * 1024,
         "hosts": hosts_data,
         "clients": clients_data,
         "security": security_data,

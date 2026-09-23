@@ -25,6 +25,7 @@ class QueueItem:
     future: asyncio.Future
     dispatch_fn: Callable[[], Awaitable[Any]]
     position: int = 0
+    nbytes: int = 0
 
 
 @dataclass
@@ -63,6 +64,8 @@ class PriorityQueueManager:
         self._has_items = asyncio.Event()
         self._worker_tasks: list[asyncio.Task] = []
         self._overflow_code = config.overflow_status_code
+        self._max_queued_bytes = config.max_queued_mb * 1024 * 1024
+        self._queued_bytes = 0
         self._watermark_fired: set[str] = set()
         self._event_callbacks: list[Callable] = []
 
@@ -99,9 +102,21 @@ class PriorityQueueManager:
             await self._fire_event("queue.full", tier=tier, client_id=item.request_id)
             raise QueueFull(tier, self._overflow_code)
 
+        # Bodies are buffered until dequeue, so depth alone does not bound memory.
+        # Admit one oversized body into an otherwise empty queue to avoid a permanent
+        # refusal that can never be resolved by waiting.
+        if (
+            self._queued_bytes + item.nbytes > self._max_queued_bytes
+            and not self._all_empty()
+        ):
+            self._stats[tier].rejected += 1
+            await self._fire_event("queue.over_capacity", tier=tier, client_id=item.request_id)
+            raise QueueOverCapacity(tier, self._overflow_code)
+
         position = q.qsize() + 1
         item.position = position
         await q.put(item)
+        self._queued_bytes += item.nbytes
         self._has_items.set()
 
         # Check high watermark
@@ -126,6 +141,10 @@ class PriorityQueueManager:
                         break
                     except asyncio.QueueEmpty:
                         pass
+
+                if item is not None:
+                    # Release memory accounting at dequeue, not after inference completes.
+                    self._queued_bytes = max(0, self._queued_bytes - item.nbytes)
 
                 if item is None:
                     # Check if all queues truly empty before clearing the event.
@@ -170,8 +189,14 @@ class PriorityQueueManager:
                 if all(q.empty() for q in self._queues.values()):
                     await self._fire_event("queue.drained", tier=None)
 
+    def _all_empty(self) -> bool:
+        return all(q.empty() for q in self._queues.values())
+
     def queue_depths(self) -> dict[str, int]:
         return {t: self._queues[t].qsize() for t in TIERS}
+
+    def queued_bytes(self) -> int:
+        return self._queued_bytes
 
     def active_count(self) -> int:
         return self._active
@@ -203,6 +228,7 @@ class PriorityQueueManager:
             while not self._queues[t].empty():
                 try:
                     item = self._queues[t].get_nowait()
+                    self._queued_bytes = max(0, self._queued_bytes - item.nbytes)
                     item.future.set_exception(QueueFlushed(t))
                     dropped += 1
                 except asyncio.QueueEmpty:
@@ -216,6 +242,12 @@ class PriorityQueueManager:
 
 
 class QueueFull(Exception):
+    def __init__(self, tier: str, status_code: int) -> None:
+        self.tier = tier
+        self.status_code = status_code
+
+
+class QueueOverCapacity(Exception):
     def __init__(self, tier: str, status_code: int) -> None:
         self.tier = tier
         self.status_code = status_code
