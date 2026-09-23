@@ -54,12 +54,12 @@ async def queue_status(request: Request):
         }
 
     hosts_data = []
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         hosts_data.append({
             "name": host.name,
             "url": host.url,
-            "healthy": host.healthy,
-            "models": host.models,
+            "healthy": host.reachable,
+            "models": sorted(host.loaded_models),
             "last_checked": host.last_checked.isoformat() if host.last_checked else None,
             "requests_handled": host.requests_handled,
             "failures": host.failures,
@@ -154,15 +154,15 @@ async def metrics(request: Request):
         "# HELP oqp_host_healthy Whether the host is currently healthy (1=healthy, 0=unhealthy)",
         "# TYPE oqp_host_healthy gauge",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
-        lines.append(f'oqp_host_healthy{{name="{name}"}} {1 if host.healthy else 0}')
+        lines.append(f'oqp_host_healthy{{name="{name}"}} {1 if host.reachable else 0}')
 
     lines += [
         "# HELP oqp_host_requests_total Total requests handled by host",
         "# TYPE oqp_host_requests_total counter",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
         lines.append(f'oqp_host_requests_total{{name="{name}"}} {host.requests_handled}')
 
@@ -170,7 +170,7 @@ async def metrics(request: Request):
         "# HELP oqp_host_failures_total Total upstream failures for host",
         "# TYPE oqp_host_failures_total counter",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
         lines.append(f'oqp_host_failures_total{{name="{name}"}} {host.failures}')
 

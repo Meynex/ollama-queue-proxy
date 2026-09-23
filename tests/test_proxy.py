@@ -59,7 +59,7 @@ async def test_non_streaming_response_content_length_correct():
     """
     from fastapi import Request
     from ollama_queue_proxy.proxy import dispatch_request
-    from ollama_queue_proxy.hosts import HostManager, OllamaHost
+    from ollama_queue_proxy.routing import RoutingTable
     from tests.conftest import make_config
 
     payload = {"message": {"role": "assistant", "content": "hi"}, "done": True}
@@ -79,10 +79,8 @@ async def test_non_streaming_response_content_length_correct():
     mock_client.request = AsyncMock(return_value=mock_resp)
 
     cfg = make_config()
-    host = OllamaHost(url="http://ollama-test:11434", name="test")
-    host.healthy = True
-    hm = HostManager.__new__(HostManager)
-    hm.hosts = [host]
+    routing_table = RoutingTable(cfg.ollama, cfg.routing, mock_client)
+    routing_table.hosts[0].reachable = True
 
     scope = {
         "type": "http",
@@ -99,8 +97,8 @@ async def test_non_streaming_response_content_length_correct():
         body=json.dumps({"model": "llama3", "messages": []}).encode(),
         client_id=None,
         config=cfg,
-        host_manager=hm,
         client=mock_client,
+        routing_table=routing_table,
     )
 
     # JSONResponse uses compact separators — match that serialisation to get the correct length
@@ -131,7 +129,7 @@ async def test_chunked_json_response_not_treated_as_streaming():
     from fastapi import Request
     from fastapi.responses import JSONResponse, StreamingResponse
     from ollama_queue_proxy.proxy import dispatch_request
-    from ollama_queue_proxy.hosts import HostManager, OllamaHost
+    from ollama_queue_proxy.routing import RoutingTable
     from tests.conftest import make_config
 
     payload = {"embeddings": [[0.1, 0.2, 0.3]], "model": "bge-m3"}
@@ -148,10 +146,8 @@ async def test_chunked_json_response_not_treated_as_streaming():
     mock_client.request = AsyncMock(return_value=mock_resp)
 
     cfg = make_config()
-    host = OllamaHost(url="http://ollama-test:11434", name="test")
-    host.healthy = True
-    hm = HostManager.__new__(HostManager)
-    hm.hosts = [host]
+    routing_table = RoutingTable(cfg.ollama, cfg.routing, mock_client)
+    routing_table.hosts[0].reachable = True
 
     scope = {
         "type": "http",
@@ -168,8 +164,8 @@ async def test_chunked_json_response_not_treated_as_streaming():
         body=json.dumps({"model": "bge-m3", "input": "test"}).encode(),
         client_id=None,
         config=cfg,
-        host_manager=hm,
         client=mock_client,
+        routing_table=routing_table,
     )
 
     assert isinstance(response, JSONResponse), (
