@@ -209,3 +209,16 @@ logging:
 # keep_alive:
 #   default: "5m"
 #   override: false
+
+# ---------------------------------------------------------------------------
+# Optional Laya priority classifier
+# ---------------------------------------------------------------------------
+# Requires a local `laya-serve` sidecar exposing POST /v1/systemone.
+# The classifier only affects inference requests; authenticated priority ceilings
+# remain authoritative. Fail-open keeps the existing/header priority on outages.
+# decision_router:
+#   enabled: true
+#   url: "http://laya:8000/v1/systemone"
+#   timeout_ms: 100
+#   fail_open: true
+#   min_confidence: 0.85

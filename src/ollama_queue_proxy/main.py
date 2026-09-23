@@ -19,7 +19,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .auth import AuthManager, scope_denied
 from .cache import EmbeddingCache
 from .concurrency import ClientConcurrencyManager
-from .config import Config, load_config
+from .config import ApiKeyConfig, Config, load_config
+from .decision_router import DecisionRouter, DecisionRouterUnavailable
 from .middleware import RequestContextMiddleware, get_client_id, parse_priority
 from .openai_compat import (
     is_openai_compat_path,
@@ -55,6 +56,7 @@ class AppState:
     webhook_manager: WebhookManager
     http_client: httpx.AsyncClient
     routing_table: RoutingTable
+    decision_router: DecisionRouter | None = None
     embedding_cache: EmbeddingCache | None = None
     concurrency_manager: ClientConcurrencyManager | None = None
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -103,6 +105,11 @@ async def lifespan(app: FastAPI):
     auth_manager = AuthManager(config.auth)
     routing_table = RoutingTable(config.ollama, config.routing, http_client)
     await routing_table.startup_probe()
+    decision_router = (
+        DecisionRouter(config.decision_router, http_client)
+        if config.decision_router.enabled
+        else None
+    )
     # Host caps expand the worker pool; RoutingTable owns the per-host semaphores.
     queue_workers = routing_table.worker_capacity(config.proxy.max_concurrent)
     queue_manager = PriorityQueueManager(config.queue, queue_workers)
@@ -143,6 +150,7 @@ async def lifespan(app: FastAPI):
         webhook_manager=webhook_manager,
         http_client=http_client,
         routing_table=routing_table,
+        decision_router=decision_router,
         embedding_cache=embedding_cache,
         concurrency_manager=concurrency_manager,
         client_stats=client_stats,
@@ -232,6 +240,7 @@ async def _enqueue_request(
     client_id: str | None,
     tier: str,
     state: AppState,
+    priority_key: ApiKeyConfig | None = None,
     reentries: int = 0,
     path_override: str | None = None,
     body_transform=None,
@@ -275,6 +284,20 @@ async def _enqueue_request(
                 body = json.dumps(body_transform(parsed_body), separators=(",", ":")).encode()
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
+
+    if state.decision_router is not None:
+        try:
+            classified_tier = await state.decision_router.classify_priority(path, body)
+        except DecisionRouterUnavailable:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "decision router unavailable",
+                    "request_id": request_id,
+                },
+            )
+        if classified_tier is not None:
+            tier = state.auth_manager.enforce_priority_ceiling(classified_tier, priority_key)
 
     # keep_alive injection — runs before cache check so cached responses also reflect
     # the injected value (though for embeddings keep_alive has no effect upstream)
@@ -467,6 +490,7 @@ async def proxy_handler(request: Request, path: str):
             client_id=client_id,
             tier=tier,
             state=state,
+            priority_key=key_cfg,
             path_override=native_path,
             body_transform=translate_chat_request if is_chat else None,
         )
@@ -516,6 +540,7 @@ async def proxy_handler(request: Request, path: str):
         client_id=client_id,
         tier=tier,
         state=state,
+        priority_key=key_cfg,
     )
 
 

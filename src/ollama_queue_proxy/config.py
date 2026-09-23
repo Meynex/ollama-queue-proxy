@@ -303,6 +303,30 @@ class KeepAliveConfig(BaseModel):
     override: bool = False
 
 
+class DecisionRouterConfig(BaseModel):
+    """Optional local decision service used to classify inference priority."""
+
+    enabled: bool = False
+    url: str = "http://laya:8000/v1/systemone"
+    timeout_ms: int = 100
+    fail_open: bool = True
+    min_confidence: float = 0.85
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def positive_timeout(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("decision_router.timeout_ms must be positive")
+        return v
+
+    @field_validator("min_confidence")
+    @classmethod
+    def valid_confidence(cls, v: float) -> float:
+        if not 0 <= v <= 1:
+            raise ValueError("decision_router.min_confidence must be between 0 and 1")
+        return v
+
+
 class Config(BaseModel):
     proxy: ProxyConfig = ProxyConfig()
     ollama: OllamaConfig
@@ -316,6 +340,7 @@ class Config(BaseModel):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     embedding_cache: EmbeddingCacheConfig = EmbeddingCacheConfig()
     keep_alive: KeepAliveConfig = KeepAliveConfig()
+    decision_router: DecisionRouterConfig = DecisionRouterConfig()
 
     @model_validator(mode="after")
     def validate_v2_constraints(self) -> "Config":

@@ -333,6 +333,21 @@ client = httpx.Client(
 
 The proxy caps the priority to the key's `max_priority` — a batch key configured with `max_priority: low` can't elevate itself to `high` regardless of what header it sends.
 
+### Optional Laya classifier
+
+An optional local [Laya](https://github.com/NandhaKishorM/laya) sidecar can classify inference requests as `high`, `normal`, or `low` before queue admission. Laya is a typed decision model, not a chat model; OQP calls its Jev-compatible `/v1/systemone` endpoint. The integration is fail-open by default, skips metadata fast-path requests, and always applies the authenticated key's `max_priority` ceiling after classification.
+
+```yaml
+decision_router:
+  enabled: true
+  url: "http://laya:8000/v1/systemone"
+  timeout_ms: 100
+  fail_open: true
+  min_confidence: 0.85
+```
+
+Run Laya separately so its PyTorch runtime and model weights do not enlarge the queue-proxy container. See [`docs/laya-priority.md`](docs/laya-priority.md) for installation, Unraid networking, and failure tests.
+
 ---
 
 ## Failover

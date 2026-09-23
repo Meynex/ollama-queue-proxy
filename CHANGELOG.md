@@ -17,6 +17,9 @@
 
 ## [Unreleased]
 
+### Added
+- Optional local Laya decision-router integration for automatic inference priority classification.
+
 ## [0.4.4] - 2026-08-31
 
 ### Added

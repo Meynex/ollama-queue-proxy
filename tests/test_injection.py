@@ -206,7 +206,7 @@ def test_injection_priority_ceiling_enforced():
 
     captured_tier = {}
 
-    async def fake_enqueue(request, client_id, tier, state):
+    async def fake_enqueue(request, client_id, tier, state, priority_key=None):
         captured_tier["tier"] = tier
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=200, content={})
