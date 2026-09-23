@@ -40,6 +40,33 @@ def test_translate_chat_preserves_model_messages_and_maps_options():
     assert result["stream"] is True
 
 
+def test_translate_chat_maps_reasoning_effort_to_think():
+    assert translate_chat_request({"reasoning_effort": "off"})["think"] is False
+    assert translate_chat_request({"reasoning_effort": "high"})["think"] is True
+    assert translate_chat_request({"reasoning_effort": "off", "think": True})["think"] is True
+
+
+def test_translate_chat_reserves_answer_budget_for_reasoning():
+    result = translate_chat_request({
+        "think": True, "max_tokens": 64,
+    })
+    assert result["options"]["num_predict"] == 256
+
+
+def test_translate_chat_preserves_large_reasoning_budget():
+    result = translate_chat_request({
+        "think": True, "max_tokens": 1024,
+    })
+    assert result["options"]["num_predict"] == 1024
+
+
+def test_translate_chat_does_not_raise_non_reasoning_budget():
+    result = translate_chat_request({
+        "think": False, "max_tokens": 64,
+    })
+    assert result["options"]["num_predict"] == 64
+
+
 def test_translate_chat_pi_content_parts_for_all_message_roles():
     result = translate_chat_request({
         "model": "qwen3",
@@ -90,6 +117,17 @@ def test_wrap_chat_response_openai_schema_and_usage():
     assert result["choices"][0]["message"]["content"] == "hello"
     assert result["choices"][0]["finish_reason"] == "stop"
     assert result["usage"] == {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8}
+
+
+def test_wrap_chat_thinking_as_openai_reasoning():
+    response = wrap_chat_response({
+        "model": "qwen3.8:27b",
+        "message": {"role": "assistant", "content": "answer", "thinking": "reason"},
+    })
+    assert response["choices"][0]["message"]["reasoning"] == "reason"
+
+    chunk = wrap_chat_chunk({"model": "qwen3.8:27b", "message": {"thinking": "reason"}})
+    assert chunk["choices"][0]["delta"]["reasoning"] == "reason"
 
 
 def test_wrap_chat_chunk_and_error():

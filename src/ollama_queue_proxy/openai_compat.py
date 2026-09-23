@@ -7,6 +7,7 @@ import json
 _OPENAI_COMPAT_PATHS: frozenset[str] = frozenset({
     "/v1/embeddings", "/v1/chat/completions",
 })
+_MIN_REASONING_NUM_PREDICT = 256
 
 
 def _normalized(path: str) -> str:
@@ -71,12 +72,28 @@ def translate_chat_request(body: dict) -> dict:
         ]
     # Ollama uses the same stream flag; retaining it selects NDJSON or JSON.
     result["stream"] = bool(body.get("stream", False))
+    # Ollama supports native thinking while OpenAI clients commonly expose the
+    # control as reasoning_effort. Preserve an explicit native `think` value.
+    if "think" not in result and "reasoning_effort" in result:
+        result["think"] = result["reasoning_effort"] != "off"
+    result.pop("reasoning_effort", None)
     options = dict(result.pop("options", {}) or {})
     for source, target in (("max_tokens", "num_predict"), ("max_completion_tokens", "num_predict"),
                            ("top_p", "top_p"), ("temperature", "temperature"),
                            ("seed", "seed"), ("stop", "stop")):
         if source in result and target not in options:
             options[target] = result.pop(source)
+    # Qwen thinking consumes the same Ollama prediction budget as the final
+    # answer. Very small OpenAI max_tokens values can therefore terminate after
+    # thinking and return an apparently empty answer. Reserve enough room for a
+    # useful final response while preserving larger caller-provided budgets.
+    if result.get("think") is True and "num_predict" in options:
+        try:
+            options["num_predict"] = max(
+                int(options["num_predict"]), _MIN_REASONING_NUM_PREDICT
+            )
+        except (TypeError, ValueError):
+            pass
     if options:
         result["options"] = options
     # OpenAI clients sometimes send unsupported bookkeeping fields.
@@ -98,6 +115,7 @@ def wrap_chat_response(body: dict, model: str | None = None) -> dict:
         "choices": [{"index": 0, "message": {
             "role": message.get("role", "assistant"),
             "content": message.get("content", ""),
+            **({"reasoning": message["thinking"]} if message.get("thinking") else {}),
         }, "finish_reason": body.get("done_reason", "stop") if body.get("done", True) else None}],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                   "total_tokens": prompt_tokens + completion_tokens},
@@ -111,6 +129,8 @@ def wrap_chat_chunk(body: dict, model: str | None = None) -> dict:
     delta = {"role": message["role"]} if message.get("role") else {}
     if message.get("content"):
         delta["content"] = message["content"]
+    if message.get("thinking"):
+        delta["reasoning"] = message["thinking"]
     return {
         "id": "chatcmpl-ollama", "object": "chat.completion.chunk", "created": 0,
         "model": model or body.get("model", ""),
