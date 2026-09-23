@@ -207,6 +207,13 @@ _KEEP_ALIVE_PATHS = frozenset({
     "/api/generate", "/api/chat", "/api/embed", "/api/embeddings"
 })
 
+# Metadata endpoints do not consume inference capacity. Keeping them outside the
+# priority queue prevents health checks and model polling from waiting behind a
+# long generation request.
+_METADATA_FAST_PATHS = frozenset({
+    "/", "/api/tags", "/api/version", "/api/ps", "/api/show",
+})
+
 
 def _inject_keep_alive(body: bytes, cfg_default: str, override: bool, max_body_mb: int) -> bytes:
     """
@@ -256,6 +263,20 @@ async def _enqueue_request(
     body, body_err = await read_body(request, state.config.proxy.max_request_body_mb)
     if body_err:
         return body_err
+
+    path = path_override if path_override is not None else request.url.path
+    if path in _METADATA_FAST_PATHS:
+        return await dispatch_request(
+            request=request,
+            body=body,
+            client_id=client_id,
+            config=state.config,
+            host_manager=state.host_manager,
+            client=state.http_client,
+            routing_table=state.routing_table,
+            path_override=path_override,
+        )
+
     if body_transform is not None:
         try:
             parsed_body = json.loads(body) if body else {}
@@ -266,7 +287,6 @@ async def _enqueue_request(
 
     # keep_alive injection — runs before cache check so cached responses also reflect
     # the injected value (though for embeddings keep_alive has no effect upstream)
-    path = path_override if path_override is not None else request.url.path
     ka_cfg = state.config.keep_alive
     if path in _KEEP_ALIVE_PATHS:
         body = _inject_keep_alive(

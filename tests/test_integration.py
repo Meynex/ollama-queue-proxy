@@ -30,6 +30,40 @@ VALKEY_URL = os.environ.get("VALKEY_URL", "redis://localhost:6379/0")
 
 
 # ---------------------------------------------------------------------------
+# Metadata fast path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_metadata_fast_path_bypasses_queue():
+    from fastapi.responses import JSONResponse
+    from ollama_queue_proxy.main import _enqueue_request
+
+    request = MagicMock()
+    request.url.path = "/api/tags"
+    request.state.request_id = "metadata-test"
+    state = MagicMock()
+    state.config.proxy.max_request_body_mb = 50
+    state.host_manager = MagicMock()
+    state.routing_table = MagicMock()
+    state.http_client = MagicMock()
+    state.queue_manager.enqueue = AsyncMock(side_effect=AssertionError("queued"))
+
+    expected = JSONResponse(status_code=200, content={"models": []})
+    with (
+        patch("ollama_queue_proxy.main.read_body", new_callable=AsyncMock) as read_body,
+        patch("ollama_queue_proxy.main.dispatch_request", new_callable=AsyncMock) as dispatch,
+    ):
+        read_body.return_value = (b"", None)
+        dispatch.return_value = expected
+        result = await _enqueue_request(request, "monitor", "normal", state)
+
+    assert result is expected
+    dispatch.assert_awaited_once()
+    state.queue_manager.enqueue.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # Fixture: live Valkey connection (skip if unreachable)
 # ---------------------------------------------------------------------------
 
