@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .auth import AuthManager
+from .auth import AuthManager, scope_denied
 from .cache import EmbeddingCache
 from .concurrency import ClientConcurrencyManager
 from .config import Config, load_config
@@ -429,6 +429,10 @@ async def proxy_handler(request: Request, path: str):
     key_cfg, auth_err = await state.auth_manager.authenticate(request)
     if auth_err:
         return auth_err
+
+    required_scope = "read" if request.url.path in _METADATA_FAST_PATHS else "inference"
+    if state.config.auth.enabled and (key_cfg is None or not key_cfg.allows(required_scope)):
+        return scope_denied(request, required_scope)
 
     # Resolve client ID — from key config (authoritative) or caller header
     client_id: str | None

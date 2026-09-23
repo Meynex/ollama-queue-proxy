@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 
+from ..auth import require_scope
+
 if TYPE_CHECKING:
     from ..main import AppState
 
@@ -28,8 +30,7 @@ async def health():
 async def queue_status(request: Request):
     state: AppState = request.app.state.oqp
 
-    # Auth check (same as any other endpoint when enabled)
-    _, err = await state.auth_manager.authenticate(request)
+    err = await require_scope(request, "read")
     if err:
         return err
 
@@ -106,8 +107,7 @@ async def metrics(request: Request):
     """Prometheus text exposition format."""
     state: AppState = request.app.state.oqp
 
-    # Auth mirrors /queue/status
-    _, err = await state.auth_manager.authenticate(request)
+    err = await require_scope(request, "read")
     if err:
         return err
 

@@ -18,9 +18,36 @@ logger = logging.getLogger(__name__)
 PRIORITY_ORDER = {"high": 2, "normal": 1, "low": 0}
 
 
+def scope_denied(request: Request, required: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": f"{required} permission required",
+            "request_id": getattr(request.state, "request_id", "unknown"),
+        },
+    )
+
+
+async def require_scope(request: Request, required: str) -> JSONResponse | None:
+    state = request.app.state.oqp
+    key_cfg, err = await state.auth_manager.authenticate(request)
+    if err:
+        return err
+    if state.config.auth.enabled and (key_cfg is None or not key_cfg.allows(required)):
+        return scope_denied(request, required)
+    return None
+
+
 class AuthManager:
     def __init__(self, config: AuthConfig) -> None:
         self._config = config
+        for key in config.keys:
+            if key.management:
+                logger.warning(
+                    "config.deprecated key=auth.keys[client_id=%s].management — "
+                    "use scope: management instead",
+                    key.client_id,
+                )
         # O(1) key lookup — built once at startup
         self._key_map: dict[str, ApiKeyConfig] = {k.key: k for k in config.keys}
         # Rate limiting: {ip: [(timestamp, ...), ...]}

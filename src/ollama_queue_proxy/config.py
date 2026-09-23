@@ -94,13 +94,33 @@ class WebhookConfig(BaseModel):
     allowed_hosts: list[str] = []  # hostnames exempt from SSRF check (for internal ntfy etc.)
 
 
+SCOPE_ORDER: dict[str, int] = {"read": 0, "inference": 1, "management": 2}
+
+
 class ApiKeyConfig(BaseModel):
     key: str
     client_id: str
     description: str | None = None
     max_priority: Literal["high", "normal", "low"] = "normal"
+    # Inference preserves the pre-scope behavior for existing keys.
+    scope: Literal["read", "inference", "management"] = "inference"
+    # Deprecated compatibility field; management=true upgrades scope to management.
     management: bool = False
     max_concurrent: int = 0  # 0 = unlimited (subject to proxy.max_concurrent)
+
+    def allows(self, required: str) -> bool:
+        return SCOPE_ORDER[self.scope] >= SCOPE_ORDER[required]
+
+    @model_validator(mode="after")
+    def reconcile_management_scope(self) -> "ApiKeyConfig":
+        if self.management:
+            if "scope" in self.model_fields_set and self.scope != "management":
+                raise ValueError(
+                    f"auth.keys[] entry for client_id={self.client_id!r} sets "
+                    f"management: true and scope: {self.scope!r}"
+                )
+            self.scope = "management"
+        return self
 
     @field_validator("max_concurrent")
     @classmethod

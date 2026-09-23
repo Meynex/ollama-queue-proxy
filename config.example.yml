@@ -83,18 +83,21 @@ auth:
   #   client_id: "admin"
   #   description: "Admin key — full access"
   #   max_priority: high
-  #   management: true              # required to call /queue/pause, /drain, /flush
+  #   scope: management             # read, inference, or management
+  #   management: true              # deprecated alias for scope: management
   #   max_concurrent: 0            # 0 = unlimited (subject to proxy.max_concurrent)
   # - key: "replace-with-openwebui-secret"
   #   client_id: "openwebui"
   #   description: "Open WebUI — interactive"
   #   max_priority: high
-  #   management: false
+  #   scope: inference
+  #   management: false              # deprecated; keep only for old configs
   #   max_concurrent: 0
   # - key: "replace-with-memsearch-secret"
   #   client_id: "memsearch-watch"
   #   description: "Background embedding re-index jobs"
   #   max_priority: low
+  #   scope: inference
   #   management: false
   #   max_concurrent: 2            # cap batch client at 2 concurrent
   rate_limit:
