@@ -141,19 +141,22 @@ auth:
       client_id: "openwebui"
       description: "Open WebUI"
       max_priority: high
-      management: false
+      scope: inference         # read, inference, or management
+      management: false        # deprecated compatibility alias
       max_concurrent: 0        # unlimited (subject to proxy.max_concurrent)
     - key: "sk-my-batch-key"
       client_id: "memsearch-watch"
       description: "Background embedding jobs"
       max_priority: low
+      scope: inference
       max_concurrent: 2        # cap at 2 concurrent so it can't starve interactive users
-      management: false
+      management: false        # deprecated compatibility alias
     - key: "sk-my-admin-key"
       client_id: "admin"
       description: "Admin"
       max_priority: high
-      management: true
+      scope: management
+      management: true         # deprecated compatibility alias
 ```
 
 Consumers pass their key as a Bearer token:
@@ -168,7 +171,7 @@ Authorization: Bearer sk-my-interactive-key
 
 **Per-client concurrency caps:** `max_concurrent: N` limits a client to N simultaneous in-flight requests. Setting to `0` is unlimited. The cap must be ≤ `proxy.max_concurrent`. Different clients have independent semaphores — a capped batch client never blocks an interactive client.
 
-**Management keys:** only keys with `management: true` can call `/queue/pause`, `/queue/resume`, `/queue/drain`, `/queue/flush`. A regular key calling a management endpoint gets 403, not 401 (authenticated but not authorized).
+**Scopes:** scopes are cumulative: `read` can access metadata and status, `inference` also permits generation/chat/embeddings, and `management` additionally permits `/queue/pause`, `/queue/resume`, and `/queue/flush`. Existing `management: true` keys are upgraded to `scope: management`; conflicting values are rejected. A recognized key without sufficient scope gets 403, not 401.
 
 **MCP consumer support:** [jobsearch-mcp](https://github.com/TadMSTR/jobsearch-mcp) and [searxng-mcp](https://github.com/TadMSTR/searxng-mcp) both read `OLLAMA_API_KEY` from their environment and forward it as a Bearer token on all outgoing Ollama requests. Point them at the proxy and set their `OLLAMA_API_KEY` to their assigned key — no code changes required.
 
@@ -210,10 +213,12 @@ ollama:
       name: "rtx"
       weight: 2                    # gets 2x the traffic of weight-1 hosts
       model_sync_interval: 30      # seconds between /api/tags polls
+      max_concurrent: 2            # independent GPU slots on this host
     - url: "http://ollama-v100:11434"
       name: "v100"
       weight: 1
       model_sync_interval: 30
+      max_concurrent: 1            # single-flight for a large model
   health_check_interval: 30
 
 routing:
@@ -232,6 +237,12 @@ routing:
     OpenViking-Embedding: [v100]
 ```
 
+`ollama.hosts[].max_concurrent` optionally limits each GPU host independently; `0`
+keeps the legacy unlimited-per-host behavior. The queue worker pool expands to the
+sum of configured host limits, so a busy V100 cannot consume the RTX host's slots.
+The global `proxy.max_concurrent` remains the fallback when hosts have no explicit
+limit.
+
 `active_model_preference` is enabled by default. The proxy keeps installed models from
 `/api/tags` separate from currently loaded models from `/api/ps`; when both are eligible,
 active hosts are preferred. `active_model_bonus` multiplies their weighted round-robin
@@ -247,7 +258,7 @@ remain eligible afterward. If no host has the model, the existing `fallback` pol
 unchanged (`none` safely returns no route; `any_healthy` may load it on a healthy
 preferred host first). Unknown or empty host names are rejected during config loading.
 
-**How it works:** a background poller hits `GET /api/tags` on each host every `model_sync_interval` seconds, maintaining a live `(host → loaded_models)` map. Requests with a `model` field are routed to a host that already has it. Weighted round-robin is deterministic (not stochastic) — a 2:1 weight ratio means exactly 2 requests to the heavy host for every 1 to the lighter host.
+**How it works:** a background poller hits `GET /api/tags` on each host every `model_sync_interval` seconds, maintaining a live `(host → installed_models)` map. Requests with a `model` field are routed to a host that has it installed; `/api/ps` is tracked separately for active-model preference. Weighted round-robin is deterministic (not stochastic) — a 2:1 weight ratio means exactly 2 requests to the heavy host for every 1 to the lighter host.
 
 **Requests without a `model` field** use weighted round-robin across all healthy hosts.
 
@@ -305,7 +316,7 @@ Three tiers: `high`, `normal` (default), `low`. Set the tier per-request:
 X-Queue-Priority: low
 ```
 
-Workers dispatch high before normal before low. Each tier has its own depth limit, max wait timeout, and high-watermark threshold for webhook events.
+Workers dispatch high before normal before low. Each tier has its own depth limit, max wait timeout, and high-watermark threshold for webhook events. `queue.max_queued_mb` additionally caps total buffered request-body bytes across all tiers; an oversized request is admitted only when the queues are empty, preventing a permanent deadlock.
 
 **Consumer example:**
 ```python
@@ -321,6 +332,21 @@ client = httpx.Client(
 ```
 
 The proxy caps the priority to the key's `max_priority` — a batch key configured with `max_priority: low` can't elevate itself to `high` regardless of what header it sends.
+
+### Optional Laya classifier
+
+An optional local [Laya](https://github.com/NandhaKishorM/laya) sidecar can classify inference requests as `high`, `normal`, or `low` before queue admission. Laya is a typed decision model, not a chat model; OQP calls its Jev-compatible `/v1/systemone` endpoint. The integration is fail-open by default, skips metadata fast-path requests, and always applies the authenticated key's `max_priority` ceiling after classification.
+
+```yaml
+decision_router:
+  enabled: true
+  url: "http://laya:8000/v1/systemone"
+  timeout_ms: 100
+  fail_open: true
+  min_confidence: 0.85
+```
+
+Run Laya separately so its PyTorch runtime and model weights do not enlarge the queue-proxy container. See [`docs/laya-priority.md`](docs/laya-priority.md) for installation, Unraid networking, and failure tests.
 
 ---
 
@@ -357,6 +383,8 @@ v0.2.0 is fully backward-compatible. All v0.1.x configs load without changes —
 | `embedding_cache.enabled` | `false` (disabled) |
 | `keep_alive.default` | `"5m"` |
 | `auth.keys[].max_concurrent` | `0` (unlimited) |
+| `auth.keys[].scope` | `inference` (legacy key behavior) |
+| `queue.max_queued_mb` | `512` |
 | `client_injection.listeners` | `[]` (no injection ports) |
 
 No config changes required to upgrade.

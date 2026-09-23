@@ -8,7 +8,7 @@ import sys
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 
 class HostConfig(BaseModel):
@@ -16,6 +16,9 @@ class HostConfig(BaseModel):
     name: str
     weight: int = 1
     model_sync_interval: int = 30
+    # 0 keeps the legacy unlimited-per-host behavior. Set this per GPU host
+    # when a shared router should allow independent GPU concurrency.
+    max_concurrent: int = 0
 
     @field_validator("name")
     @classmethod
@@ -40,6 +43,15 @@ class HostConfig(BaseModel):
             )
         return v
 
+    @field_validator("max_concurrent")
+    @classmethod
+    def non_negative_concurrent(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                f"ollama.hosts[].max_concurrent must be non-negative, got {v}"
+            )
+        return v
+
 
 class OllamaConfig(BaseModel):
     hosts: list[HostConfig]
@@ -58,6 +70,15 @@ class QueueConfig(BaseModel):
     normal: TierConfig = TierConfig(max_depth=100, max_wait=300)
     low: TierConfig = TierConfig(max_depth=200, max_wait=600)
     overflow_status_code: Literal[503, 429] = 503
+    # Queued bodies remain buffered in memory until a worker dequeues them.
+    max_queued_mb: int = 512
+
+    @field_validator("max_queued_mb")
+    @classmethod
+    def positive_queued_bytes_cap(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("queue.max_queued_mb must be at least 1 MB")
+        return v
 
 
 class WebhookConfig(BaseModel):
@@ -73,13 +94,33 @@ class WebhookConfig(BaseModel):
     allowed_hosts: list[str] = []  # hostnames exempt from SSRF check (for internal ntfy etc.)
 
 
+SCOPE_ORDER: dict[str, int] = {"read": 0, "inference": 1, "management": 2}
+
+
 class ApiKeyConfig(BaseModel):
     key: str
     client_id: str
     description: str | None = None
     max_priority: Literal["high", "normal", "low"] = "normal"
+    # Inference preserves the pre-scope behavior for existing keys.
+    scope: Literal["read", "inference", "management"] = "inference"
+    # Deprecated compatibility field; management=true upgrades scope to management.
     management: bool = False
     max_concurrent: int = 0  # 0 = unlimited (subject to proxy.max_concurrent)
+
+    def allows(self, required: str) -> bool:
+        return SCOPE_ORDER[self.scope] >= SCOPE_ORDER[required]
+
+    @model_validator(mode="after")
+    def reconcile_management_scope(self) -> "ApiKeyConfig":
+        if self.management:
+            if "scope" in self.model_fields_set and self.scope != "management":
+                raise ValueError(
+                    f"auth.keys[] entry for client_id={self.client_id!r} sets "
+                    f"management: true and scope: {self.scope!r}"
+                )
+            self.scope = "management"
+        return self
 
     @field_validator("max_concurrent")
     @classmethod
@@ -262,6 +303,31 @@ class KeepAliveConfig(BaseModel):
     override: bool = False
 
 
+class DecisionRouterConfig(BaseModel):
+    """Optional local decision service used to classify inference priority."""
+
+    enabled: bool = False
+    url: str = "http://laya:8000/v1/systemone"
+    api_key: SecretStr | None = None
+    timeout_ms: int = 100
+    fail_open: bool = True
+    min_confidence: float = 0.85
+
+    @field_validator("timeout_ms")
+    @classmethod
+    def positive_timeout(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("decision_router.timeout_ms must be positive")
+        return v
+
+    @field_validator("min_confidence")
+    @classmethod
+    def valid_confidence(cls, v: float) -> float:
+        if not 0 <= v <= 1:
+            raise ValueError("decision_router.min_confidence must be between 0 and 1")
+        return v
+
+
 class Config(BaseModel):
     proxy: ProxyConfig = ProxyConfig()
     ollama: OllamaConfig
@@ -275,6 +341,7 @@ class Config(BaseModel):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     embedding_cache: EmbeddingCacheConfig = EmbeddingCacheConfig()
     keep_alive: KeepAliveConfig = KeepAliveConfig()
+    decision_router: DecisionRouterConfig = DecisionRouterConfig()
 
     @model_validator(mode="after")
     def validate_v2_constraints(self) -> "Config":

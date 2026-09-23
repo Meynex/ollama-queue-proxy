@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 
+from ..auth import require_scope
+
 if TYPE_CHECKING:
     from ..main import AppState
 
@@ -28,8 +30,7 @@ async def health():
 async def queue_status(request: Request):
     state: AppState = request.app.state.oqp
 
-    # Auth check (same as any other endpoint when enabled)
-    _, err = await state.auth_manager.authenticate(request)
+    err = await require_scope(request, "read")
     if err:
         return err
 
@@ -54,15 +55,17 @@ async def queue_status(request: Request):
         }
 
     hosts_data = []
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         hosts_data.append({
             "name": host.name,
             "url": host.url,
-            "healthy": host.healthy,
-            "models": host.models,
+            "healthy": host.reachable,
+            "models": sorted(host.loaded_models),
             "last_checked": host.last_checked.isoformat() if host.last_checked else None,
             "requests_handled": host.requests_handled,
             "failures": host.failures,
+            "max_concurrent": host.max_concurrent,
+            "active_requests": host.active_requests,
         })
 
     uptime = (datetime.now(timezone.utc) - state.start_time).total_seconds()
@@ -88,8 +91,11 @@ async def queue_status(request: Request):
         "queue": queue_data,
         "concurrency": {
             "active": q_mgr.active_count(),
-            "max": state.config.proxy.max_concurrent,
+            "max": q_mgr._max_concurrent,
+            "global_configured_max": state.config.proxy.max_concurrent,
         },
+        "queued_bytes": q_mgr.queued_bytes(),
+        "max_queued_bytes": state.config.queue.max_queued_mb * 1024 * 1024,
         "hosts": hosts_data,
         "clients": clients_data,
         "security": security_data,
@@ -101,8 +107,7 @@ async def metrics(request: Request):
     """Prometheus text exposition format."""
     state: AppState = request.app.state.oqp
 
-    # Auth mirrors /queue/status
-    _, err = await state.auth_manager.authenticate(request)
+    err = await require_scope(request, "read")
     if err:
         return err
 
@@ -149,15 +154,15 @@ async def metrics(request: Request):
         "# HELP oqp_host_healthy Whether the host is currently healthy (1=healthy, 0=unhealthy)",
         "# TYPE oqp_host_healthy gauge",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
-        lines.append(f'oqp_host_healthy{{name="{name}"}} {1 if host.healthy else 0}')
+        lines.append(f'oqp_host_healthy{{name="{name}"}} {1 if host.reachable else 0}')
 
     lines += [
         "# HELP oqp_host_requests_total Total requests handled by host",
         "# TYPE oqp_host_requests_total counter",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
         lines.append(f'oqp_host_requests_total{{name="{name}"}} {host.requests_handled}')
 
@@ -165,7 +170,7 @@ async def metrics(request: Request):
         "# HELP oqp_host_failures_total Total upstream failures for host",
         "# TYPE oqp_host_failures_total counter",
     ]
-    for host in state.host_manager.hosts:
+    for host in state.routing_table.hosts:
         name = _pm_label(host.name)
         lines.append(f'oqp_host_failures_total{{name="{name}"}} {host.failures}')
 

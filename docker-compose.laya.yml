@@ -1,0 +1,22 @@
+# Optional Laya sidecar. Start with:
+# docker compose -f docker-compose.yml -f docker-compose.laya.yml up -d
+services:
+  laya:
+    image: ghcr.io/meynex/laya-decision-service:0.1.0
+    container_name: oqp-laya
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      LAYA_API_KEY: ${LAYA_API_KEY:?Set LAYA_API_KEY in the environment}
+    volumes:
+      - laya-model-cache:/home/laya/.cache/huggingface
+
+volumes:
+  laya-model-cache:
+    name: oqp-laya-model-cache

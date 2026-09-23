@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.8] - 2026-09-23
+
+### Added
+- Optional local Laya decision-router integration for automatic inference priority classification.
+- Fail-open and confidence-gated classification with authenticated priority ceilings preserved.
+- Laya deployment and verification runbook.
+
+## [0.4.7] - 2026-09-23
+
+### Added
+- Metadata fast-path for health and model metadata reads.
+- Per-GPU host concurrency limits with independent routing-table semaphores.
+- Global queued-request body byte limit via `queue.max_queued_mb`.
+- Cumulative `read`, `inference`, and `management` API-key scopes.
+
+### Changed
+- Centralized host health, model inventory, failover, counters, and routing state.
+- Pinned and security-updated Docker base image with CI build verification.
+
+### Documentation
+- Added Unraid deployment, per-GPU validation, and rollback runbook.
+
 ## [Unreleased]
 
 ## [0.4.4] - 2026-08-31

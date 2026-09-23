@@ -86,6 +86,7 @@ def make_injection_app(inject_as: str, key_cfg: ApiKeyConfig) -> FastAPI:
             client_id=inject_as,
             tier=tier,
             state=state,
+            priority_key=key_cfg,
         )
 
     return inj_app

@@ -16,11 +16,11 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .auth import AuthManager
+from .auth import AuthManager, scope_denied
 from .cache import EmbeddingCache
 from .concurrency import ClientConcurrencyManager
-from .config import Config, load_config
-from .hosts import HostManager
+from .config import ApiKeyConfig, Config, load_config
+from .decision_router import DecisionRouter, DecisionRouterUnavailable
 from .middleware import RequestContextMiddleware, get_client_id, parse_priority
 from .openai_compat import (
     is_openai_compat_path,
@@ -32,7 +32,14 @@ from .openai_compat import (
     wrap_response,
 )
 from .proxy import dispatch_request, read_body
-from .queue import PriorityQueueManager, QueueFull, QueueItem, QueuePaused, RequestExpired
+from .queue import (
+    PriorityQueueManager,
+    QueueFull,
+    QueueItem,
+    QueueOverCapacity,
+    QueuePaused,
+    RequestExpired,
+)
 from .routes.queue import router as queue_router
 from .routes.status import router as status_router
 from .routing import RoutingTable
@@ -45,11 +52,11 @@ logger = logging.getLogger(__name__)
 class AppState:
     config: Config
     auth_manager: AuthManager
-    host_manager: HostManager
     queue_manager: PriorityQueueManager
     webhook_manager: WebhookManager
     http_client: httpx.AsyncClient
-    routing_table: RoutingTable | None = None
+    routing_table: RoutingTable
+    decision_router: DecisionRouter | None = None
     embedding_cache: EmbeddingCache | None = None
     concurrency_manager: ClientConcurrencyManager | None = None
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -95,9 +102,17 @@ async def lifespan(app: FastAPI):
     _warn_open_binding(config)
 
     http_client = httpx.AsyncClient()
-    host_manager = HostManager(config.ollama)
     auth_manager = AuthManager(config.auth)
-    queue_manager = PriorityQueueManager(config.queue, config.proxy.max_concurrent)
+    routing_table = RoutingTable(config.ollama, config.routing, http_client)
+    await routing_table.startup_probe()
+    decision_router = (
+        DecisionRouter(config.decision_router, http_client)
+        if config.decision_router.enabled
+        else None
+    )
+    # Host caps expand the worker pool; RoutingTable owns the per-host semaphores.
+    queue_workers = routing_table.worker_capacity(config.proxy.max_concurrent)
+    queue_manager = PriorityQueueManager(config.queue, queue_workers)
     webhook_manager = WebhookManager(config.webhooks, http_client)
 
     # Wire webhook events from queue
@@ -115,12 +130,6 @@ async def lifespan(app: FastAPI):
             "rejected": 0,
         }
 
-    # Build routing table if model-aware strategy is configured
-    routing_table: RoutingTable | None = None
-    if config.routing.strategy != "round_robin":
-        routing_table = RoutingTable(config.ollama, config.routing, http_client)
-        await routing_table.startup_probe()
-
     # Build embedding cache if enabled
     embedding_cache: EmbeddingCache | None = None
     if config.embedding_cache.enabled:
@@ -137,11 +146,11 @@ async def lifespan(app: FastAPI):
     state = AppState(
         config=config,
         auth_manager=auth_manager,
-        host_manager=host_manager,
         queue_manager=queue_manager,
         webhook_manager=webhook_manager,
         http_client=http_client,
         routing_table=routing_table,
+        decision_router=decision_router,
         embedding_cache=embedding_cache,
         concurrency_manager=concurrency_manager,
         client_stats=client_stats,
@@ -149,11 +158,8 @@ async def lifespan(app: FastAPI):
     app.state.oqp = state
     set_shared_state(state)  # make available to injection apps
 
-    await host_manager.startup_check(http_client)
     queue_manager.start_workers()
-    await host_manager.start_background_checks(http_client)
-    if routing_table:
-        routing_table.start_background_pollers()
+    routing_table.start_background_pollers()
 
     logger.info(
         "ollama-queue-proxy started host=%s port=%d auth=%s injection_listeners=%d",
@@ -177,9 +183,7 @@ async def lifespan(app: FastAPI):
         logger.warning("shutdown: drain timeout after %ds", drain_timeout)
 
     await queue_manager.stop_workers()
-    await host_manager.stop()
-    if routing_table:
-        await routing_table.stop()
+    await routing_table.stop()
     if embedding_cache:
         await embedding_cache.close()
     await http_client.aclose()
@@ -201,6 +205,13 @@ app.include_router(queue_router)
 
 _KEEP_ALIVE_PATHS = frozenset({
     "/api/generate", "/api/chat", "/api/embed", "/api/embeddings"
+})
+
+# Metadata endpoints do not consume inference capacity. Keeping them outside the
+# priority queue prevents health checks and model polling from waiting behind a
+# long generation request.
+_METADATA_FAST_PATHS = frozenset({
+    "/", "/api/tags", "/api/version", "/api/ps", "/api/show",
 })
 
 
@@ -229,6 +240,7 @@ async def _enqueue_request(
     client_id: str | None,
     tier: str,
     state: AppState,
+    priority_key: ApiKeyConfig | None = None,
     reentries: int = 0,
     path_override: str | None = None,
     body_transform=None,
@@ -252,6 +264,19 @@ async def _enqueue_request(
     body, body_err = await read_body(request, state.config.proxy.max_request_body_mb)
     if body_err:
         return body_err
+
+    path = path_override if path_override is not None else request.url.path
+    if path in _METADATA_FAST_PATHS:
+        return await dispatch_request(
+            request=request,
+            body=body,
+            client_id=client_id,
+            config=state.config,
+            client=state.http_client,
+            routing_table=state.routing_table,
+            path_override=path_override,
+        )
+
     if body_transform is not None:
         try:
             parsed_body = json.loads(body) if body else {}
@@ -260,9 +285,22 @@ async def _enqueue_request(
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
+    if state.decision_router is not None:
+        try:
+            classified_tier = await state.decision_router.classify_priority(path, body)
+        except DecisionRouterUnavailable:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "decision router unavailable",
+                    "request_id": request_id,
+                },
+            )
+        if classified_tier is not None:
+            tier = state.auth_manager.enforce_priority_ceiling(classified_tier, priority_key)
+
     # keep_alive injection — runs before cache check so cached responses also reflect
     # the injected value (though for embeddings keep_alive has no effect upstream)
-    path = path_override if path_override is not None else request.url.path
     ka_cfg = state.config.keep_alive
     if path in _KEEP_ALIVE_PATHS:
         body = _inject_keep_alive(
@@ -316,7 +354,6 @@ async def _enqueue_request(
                 body=body,
                 client_id=client_id,
                 config=state.config,
-                host_manager=state.host_manager,
                 client=state.http_client,
                 routing_table=state.routing_table,
                 path_override=path_override,
@@ -331,20 +368,22 @@ async def _enqueue_request(
         request_id=request_id,
         future=future,
         dispatch_fn=dispatch_fn,
+        nbytes=len(body),
     )
 
     try:
         position = await state.queue_manager.enqueue(item)
-    except QueueFull as e:
+    except (QueueFull, QueueOverCapacity) as e:
         retry_after = state.queue_manager.retry_after(e.tier)
         if client_id:
             cs = state.client_stats.setdefault(
                 client_id, {"description": None, "processed": 0, "rejected": 0}
             )
             cs["rejected"] = cs.get("rejected", 0) + 1
+        error = "queue over capacity (bytes)" if isinstance(e, QueueOverCapacity) else "queue full"
         return JSONResponse(
             status_code=e.status_code,
-            content={"error": "queue full", "request_id": request_id},
+            content={"error": error, "request_id": request_id},
             headers={"Retry-After": str(retry_after)},
         )
     except QueuePaused as e:
@@ -414,6 +453,10 @@ async def proxy_handler(request: Request, path: str):
     if auth_err:
         return auth_err
 
+    required_scope = "read" if request.url.path in _METADATA_FAST_PATHS else "inference"
+    if state.config.auth.enabled and (key_cfg is None or not key_cfg.allows(required_scope)):
+        return scope_denied(request, required_scope)
+
     # Resolve client ID — from key config (authoritative) or caller header
     client_id: str | None
     if state.config.auth.enabled and key_cfg:
@@ -447,6 +490,7 @@ async def proxy_handler(request: Request, path: str):
             client_id=client_id,
             tier=tier,
             state=state,
+            priority_key=key_cfg,
             path_override=native_path,
             body_transform=translate_chat_request if is_chat else None,
         )
@@ -496,6 +540,7 @@ async def proxy_handler(request: Request, path: str):
         client_id=client_id,
         tier=tier,
         state=state,
+        priority_key=key_cfg,
     )
 
 

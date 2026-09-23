@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..auth import require_scope
+
 if TYPE_CHECKING:
     from ..main import AppState
 
@@ -29,22 +31,8 @@ def _validate_tier(tier: str | None, request_id: str) -> JSONResponse | None:
 
 
 async def _require_management(request: Request) -> JSONResponse | None:
-    """Check that the request has a management-capable key (or auth is disabled)."""
-    state: AppState = request.app.state.oqp
-    key_cfg, err = await state.auth_manager.authenticate(request)
-    if err:
-        return err
-    if state.config.auth.enabled:
-        # key_cfg is set (auth succeeded), now check management flag
-        if key_cfg is None or not key_cfg.management:
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "error": "management permission required",
-                    "request_id": getattr(request.state, "request_id", "unknown"),
-                },
-            )
-    return None
+    """Require the cumulative management scope (or allow auth-disabled mode)."""
+    return await require_scope(request, "management")
 
 
 @router.post("/queue/pause")

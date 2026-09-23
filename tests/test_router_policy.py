@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -9,9 +10,12 @@ from ollama_queue_proxy.concurrency import ClientConcurrencyManager
 from ollama_queue_proxy.config import (
     ApiKeyConfig,
     ConcurrencyConfig,
+    HostConfig,
+    OllamaConfig,
     RoutingConfig,
     _expand_env_references,
 )
+from ollama_queue_proxy.routing import RoutingTable
 
 
 def test_router_policy_defaults_are_safe():
@@ -19,6 +23,45 @@ def test_router_policy_defaults_are_safe():
     assert cfg.fallback == "none"
     assert cfg.retry is False
     assert cfg.max_retries == 0
+
+
+def test_host_concurrency_defaults_to_unlimited():
+    assert HostConfig(url="http://a", name="a").max_concurrent == 0
+
+
+def test_host_concurrency_rejects_negative_limit():
+    with pytest.raises(ValidationError):
+        HostConfig(url="http://a", name="a", max_concurrent=-1)
+
+
+def test_host_worker_capacity_sums_gpu_limits():
+    table = RoutingTable(OllamaConfig(hosts=[
+        HostConfig(url="http://a", name="a", max_concurrent=2),
+        HostConfig(url="http://b", name="b", max_concurrent=1),
+    ]), RoutingConfig(), MagicMock())
+    assert table.worker_capacity(2) == 3
+
+
+@pytest.mark.asyncio
+async def test_host_gpu_slots_are_independent():
+    table = RoutingTable(OllamaConfig(hosts=[
+        HostConfig(url="http://a", name="a", max_concurrent=1),
+        HostConfig(url="http://b", name="b", max_concurrent=1),
+    ]), RoutingConfig(), MagicMock())
+    a, b = table.hosts
+    await table.acquire_slot(a)
+    waiting = asyncio.create_task(table.acquire_slot(a))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    await table.acquire_slot(b)
+    assert a.active_requests == 1
+    assert b.active_requests == 1
+
+    table.release_slot(a)
+    await asyncio.wait_for(waiting, timeout=1)
+    table.release_slot(a)
+    table.release_slot(b)
 
 
 def test_router_policy_alias_and_limits():

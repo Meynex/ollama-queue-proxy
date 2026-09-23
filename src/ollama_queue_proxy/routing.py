@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import httpx
 
@@ -24,6 +25,16 @@ class HostRoutingState:
     loaded_models: set[str] = field(default_factory=set)
     active_models: set[str] = field(default_factory=set)
     reachable: bool = True
+    last_checked: datetime | None = None
+    max_concurrent: int = 0
+    requests_handled: int = 0
+    failures: int = 0
+    active_requests: int = 0
+    _slot: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent > 0:
+            self._slot = asyncio.Semaphore(self.max_concurrent)
     # v0.3 placeholder fields (not yet populated)
     # vram_total_gb: float | None = None
     # vram_used_gb: float | None = None
@@ -55,6 +66,7 @@ class RoutingTable:
                 name=h.name,
                 weight=h.weight,
                 model_sync_interval=h.model_sync_interval,
+                max_concurrent=h.max_concurrent,
             )
             for h in ollama_config.hosts
         }
@@ -71,6 +83,32 @@ class RoutingTable:
 
         self._poll_tasks: list[asyncio.Task] = []
 
+    @property
+    def hosts(self) -> list[HostRoutingState]:
+        """Return host state in configured order."""
+        return list(self._states.values())
+
+    def get(self, host_name: str) -> HostRoutingState | None:
+        return self._states.get(host_name)
+
+    def worker_capacity(self, fallback: int) -> int:
+        limits = [s.max_concurrent for s in self._states.values() if s.max_concurrent > 0]
+        return max(fallback, sum(limits)) if limits else fallback
+
+    async def acquire_slot(self, host: HostRoutingState) -> None:
+        if host._slot is not None:
+            await host._slot.acquire()
+        host.active_requests += 1
+
+    def release_slot(self, host: HostRoutingState) -> None:
+        host.active_requests = max(0, host.active_requests - 1)
+        if host._slot is not None:
+            host._slot.release()
+
+    def mark_unhealthy(self, host: HostRoutingState, error: str) -> None:
+        host.reachable = False
+        host.failures += 1
+        logger.warning("host.failure name=%s error=%s", host.name, error)
 
     async def startup_probe(self) -> None:
         """
@@ -137,13 +175,23 @@ class RoutingTable:
             data = resp.json()
             models = {m["name"] for m in data.get("models", []) if "name" in m}
             async with self._lock:
+                was_unreachable = not state.reachable
                 state.loaded_models = models
                 state.reachable = True
-            logger.debug("routing.poll host=%s models=%d", state.name, len(models))
+                state.last_checked = datetime.now(timezone.utc)
+            if was_unreachable:
+                logger.warning("host.recovered name=%s models=%d", state.name, len(models))
+            else:
+                logger.debug("routing.poll host=%s models=%d", state.name, len(models))
         except Exception as e:
             async with self._lock:
+                was_reachable = state.reachable
                 state.reachable = False
-            logger.warning("routing.poll_failed host=%s error=%s", state.name, e)
+                state.last_checked = datetime.now(timezone.utc)
+            if was_reachable:
+                logger.warning("host.unhealthy name=%s error=%s", state.name, e)
+            else:
+                logger.debug("routing.poll_failed host=%s error=%s", state.name, e)
 
     async def _poll_active_models(self, state: HostRoutingState) -> None:
         try:
@@ -201,13 +249,18 @@ class RoutingTable:
         if strategy == "model_aware" and model:
             return self._pick_model_aware(model)
         else:
-            result = self._pick_round_robin(list(self._states.values()))
+            result = self._pick_round_robin(self._candidates())
             if result:
                 self.routing_decisions["round_robin"] += 1
             return result
 
-    def _pick_model_aware(self, model: str) -> HostRoutingState | None:
+    def _candidates(self) -> list[HostRoutingState]:
+        """Use reachable hosts, falling back to all hosts if health is stale."""
         reachable = [s for s in self._states.values() if s.reachable]
+        return reachable or list(self._states.values())
+
+    def _pick_model_aware(self, model: str) -> HostRoutingState | None:
+        reachable = self._candidates()
         with_model = [s for s in reachable if model in s.loaded_models]
 
         if with_model:

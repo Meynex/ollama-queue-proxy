@@ -11,8 +11,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Config
-from .hosts import HostManager, OllamaHost
-from .routing import RoutingTable
+from .routing import HostRoutingState, RoutingTable
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ async def read_body(request: Request, max_mb: int) -> tuple[bytes, JSONResponse 
 
 
 async def _proxy_to_host(
-    host: OllamaHost,
+    host: HostRoutingState,
     method: str,
     path: str,
     query: str,
@@ -122,9 +121,8 @@ async def dispatch_request(
     body: bytes,
     client_id: str | None,
     config: Config,
-    host_manager: HostManager,
     client: httpx.AsyncClient,
-    routing_table: RoutingTable | None = None,
+    routing_table: RoutingTable,
     path_override: str | None = None,
 ) -> StreamingResponse | JSONResponse:
     """
@@ -172,25 +170,9 @@ async def dispatch_request(
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
-    # Build candidate host list — routing table (model_aware) or HostManager fallback
-    def _next_host() -> OllamaHost | None:
-        if routing_table is not None:
-            rt_state = routing_table.pick(model)
-            if rt_state is None:
-                return None
-            # Map routing state back to OllamaHost object for failover tracking
-            for h in host_manager.hosts:
-                if h.name == rt_state.name:
-                    return h
-            return None
-        # Default: first healthy host (HostManager order, v0.1.x behaviour)
-        for h in host_manager.hosts:
-            if not h.healthy:
-                continue
-            if model and h.models and model not in h.models:
-                continue
-            return h
-        return None
+    # RoutingTable owns selection, health, counters, and per-host concurrency.
+    def _next_host() -> HostRoutingState | None:
+        return routing_table.pick(model)
 
     last_error: str | None = None
     attempted: set[str] = set()
@@ -202,7 +184,10 @@ async def dispatch_request(
             break
         attempted.add(host.name)
 
+        slot_owned = False
         try:
+            await routing_table.acquire_slot(host)
+            slot_owned = True
             resp = await client.request(
                 method=method,
                 url=f"{host.url}{path}" + (f"?{query}" if query else ""),
@@ -245,7 +230,7 @@ async def dispatch_request(
             }
 
             if is_streaming:
-                async def stream_gen(r=resp):
+                async def stream_gen(r=resp, reserved_host=host):
                     try:
                         async for chunk in r.aiter_bytes():
                             yield chunk
@@ -254,7 +239,11 @@ async def dispatch_request(
                         # disconnects mid-stream the generator is abandoned and
                         # GC may never run, leaking the underlying connection.
                         await r.aclose()
+                        routing_table.release_slot(reserved_host)
 
+                # The stream owns the host slot until the client disconnects or
+                # the upstream sends its final bytes.
+                slot_owned = False
                 return StreamingResponse(
                     stream_gen(),
                     status_code=resp.status_code,
@@ -278,12 +267,7 @@ async def dispatch_request(
 
         except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
             last_error = str(e)
-            host_manager.mark_unhealthy(host, last_error)
-            if routing_table is not None:
-                # Mark host unreachable in routing table too
-                rt_state = routing_table._states.get(host.name)
-                if rt_state:
-                    rt_state.reachable = False
+            routing_table.mark_unhealthy(host, last_error)
             logger.warning(
                 "proxy.upstream_failed host=%s retry_enabled=%s error=%s",
                 host.name, config.routing.retry, last_error,
@@ -294,6 +278,9 @@ async def dispatch_request(
             if not config.routing.retry or retries > config.routing.max_retries:
                 break
             continue
+        finally:
+            if slot_owned:
+                routing_table.release_slot(host)
 
     return JSONResponse(
         status_code=503,
