@@ -12,7 +12,110 @@ from .config import DecisionRouterConfig
 
 logger = logging.getLogger(__name__)
 _PRIORITIES = frozenset({"high", "normal", "low"})
-_MAX_CLASSIFICATION_BYTES = 64 * 1024
+_MAX_CLASSIFICATION_BYTES = 8 * 1024
+_MAX_CLASSIFICATION_MESSAGES = 6
+_MAX_MESSAGE_CONTENT_CHARS = 1_200
+_MAX_ROLE_CHARS = 64
+_MAX_MODEL_CHARS = 256
+
+
+def _clip_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    marker = "\n...[truncated]...\n"
+    available = max(0, limit - len(marker))
+    head = available // 2
+    return value[:head] + marker + value[-(available - head):]
+
+
+def _compact_message(message: Any) -> Any:
+    if not isinstance(message, dict):
+        return _clip_text(str(message), _MAX_MESSAGE_CONTENT_CHARS)
+    compact: dict[str, Any] = {}
+    if "role" in message:
+        compact["role"] = _clip_text(str(message["role"]), _MAX_ROLE_CHARS)
+    content = message.get("content")
+    if isinstance(content, str):
+        compact["content"] = _clip_text(content, _MAX_MESSAGE_CONTENT_CHARS)
+    elif content is not None:
+        encoded = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+        compact["content"] = _clip_text(encoded, _MAX_MESSAGE_CONTENT_CHARS)
+    return compact
+
+
+def _compact_body(body: bytes) -> Any:
+    try:
+        parsed = json.loads(body) if body else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _clip_text(body.decode("utf-8", errors="replace"), _MAX_CLASSIFICATION_BYTES)
+
+    if not isinstance(parsed, dict):
+        return parsed
+
+    compact: dict[str, Any] = {}
+    if isinstance(parsed.get("model"), str):
+        compact["model"] = _clip_text(parsed["model"], _MAX_MODEL_CHARS)
+    for key in ("stream", "think"):
+        if key in parsed:
+            compact[key] = parsed[key]
+    messages = parsed.get("messages")
+    if isinstance(messages, list):
+        tail_indices = set(
+            range(
+                max(0, len(messages) - (_MAX_CLASSIFICATION_MESSAGES - 1)),
+                len(messages),
+            )
+        )
+        last_user_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if isinstance(messages[index], dict)
+                and messages[index].get("role") == "user"
+            ),
+            None,
+        )
+        if last_user_index is not None:
+            tail_indices.add(last_user_index)
+        compact["messages"] = [
+            _compact_message(messages[index]) for index in sorted(tail_indices)
+        ]
+    for key in ("prompt", "input", "inputs", "text", "query"):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            compact[key] = _clip_text(value, _MAX_MESSAGE_CONTENT_CHARS)
+        elif value is not None:
+            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            compact[key] = _clip_text(encoded, _MAX_MESSAGE_CONTENT_CHARS)
+    return compact
+
+
+def _bounded_body(body: Any) -> Any:
+    def encoded_size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    if encoded_size(body) <= _MAX_CLASSIFICATION_BYTES:
+        return body
+    if isinstance(body, dict) and isinstance(body.get("messages"), list):
+        latest_user = next(
+            (
+                message
+                for message in reversed(body["messages"])
+                if isinstance(message, dict) and message.get("role") == "user"
+            ),
+            None,
+        )
+        latest = latest_user or (body["messages"][-1] if body["messages"] else {})
+        minimal = {"messages": [_compact_message(latest)]}
+        if isinstance(body.get("model"), str):
+            minimal["model"] = _clip_text(body["model"], _MAX_MODEL_CHARS)
+        if encoded_size(minimal) <= _MAX_CLASSIFICATION_BYTES:
+            return minimal
+        return {"messages": [{"role": "user", "content": "[truncated]"}]}
+    return _clip_text(
+        json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+        _MAX_CLASSIFICATION_BYTES // 2,
+    )
 
 
 class DecisionRouterUnavailable(RuntimeError):
@@ -37,11 +140,7 @@ class DecisionRouter:
             return None
 
         state: dict[str, Any] = {"path": path}
-        sample = body[:_MAX_CLASSIFICATION_BYTES]
-        try:
-            state["body"] = json.loads(sample) if sample else {}
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            state["body"] = sample.decode("utf-8", errors="replace")
+        state["body"] = _bounded_body(_compact_body(body))
 
         payload = {
             "state": state,

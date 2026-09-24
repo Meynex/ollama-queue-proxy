@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -30,6 +32,47 @@ async def test_laya_choice_sets_priority_when_confident():
     assert result == "high"
     assert seen["authorization"] == "Bearer sidecar-secret"
     assert b'"priority"' in seen["payload"]
+
+
+@pytest.mark.asyncio
+async def test_large_chat_payload_keeps_latest_message_and_stays_bounded():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        seen["size"] = len(request.content)
+        return httpx.Response(
+            200,
+            json={"answers": {"priority": {"choice": "high", "confidence": 0.94}}},
+        )
+
+    messages = [
+        {"role": "user", "content": "old context " * 5_000}
+        for _ in range(10)
+    ]
+    messages.append({"role": "user", "content": "URGENT latest request"})
+    messages.append({"role": "assistant", "content": "trailing response"})
+    body = json.dumps(
+        {
+            "model": "qwen3:8b " * 1_000,
+            "messages": messages,
+            "input": "batch context",
+        }
+    ).encode()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = DecisionRouter(DecisionRouterConfig(enabled=True), client)
+        result = await router.classify_priority("/v1/chat/completions", body)
+
+    assert result == "high"
+    compact_body = seen["payload"]["state"]["body"]
+    assert any(
+        message.get("content") == "URGENT latest request"
+        for message in compact_body["messages"]
+    )
+    assert compact_body["input"] == "batch context"
+    assert len(compact_body["model"]) <= 256
+    assert seen["size"] < 12 * 1024
 
 
 @pytest.mark.asyncio
