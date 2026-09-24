@@ -186,7 +186,7 @@ class DecisionRouter:
                     self._config.min_confidence,
                 )
                 return None
-            logger.debug(
+            logger.info(
                 "decision_router.priority path=%s choice=%s confidence=%.3f",
                 path,
                 choice,

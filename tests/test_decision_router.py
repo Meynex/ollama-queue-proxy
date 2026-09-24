@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -10,7 +11,8 @@ from ollama_queue_proxy.decision_router import DecisionRouter, DecisionRouterUna
 
 
 @pytest.mark.asyncio
-async def test_laya_choice_sets_priority_when_confident():
+async def test_laya_choice_sets_priority_when_confident(caplog):
+    caplog.set_level(logging.INFO, logger="ollama_queue_proxy.decision_router")
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -32,6 +34,11 @@ async def test_laya_choice_sets_priority_when_confident():
     assert result == "high"
     assert seen["authorization"] == "Bearer sidecar-secret"
     assert b'"priority"' in seen["payload"]
+    assert any(
+        record.levelno == logging.INFO
+        and record.message.startswith("decision_router.priority")
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
