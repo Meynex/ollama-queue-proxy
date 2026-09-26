@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.11] - 2026-09-26
+
+### Changed
+- Promote accepted and abstained decision-router outcomes to INFO for production observability.
+
+## [0.4.10] - 2026-09-24
+
+### Added
+- Bounded decision-router payloads for safe production classification.
+
 ## [0.4.9] - 2026-09-23
 
 ### Added
