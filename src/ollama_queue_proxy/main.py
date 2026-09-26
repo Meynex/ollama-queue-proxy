@@ -499,6 +499,7 @@ async def proxy_handler(request: Request, path: str):
         if is_chat and isinstance(response, StreamingResponse):
             async def chat_stream():
                 pending = b""
+                saw_tool_calls = False
                 async for chunk in response.body_iterator:
                     pending += chunk
                     lines = pending.split(b"\n")
@@ -510,12 +511,23 @@ async def proxy_handler(request: Request, path: str):
                             item = json.loads(line)
                         except (json.JSONDecodeError, TypeError):
                             continue
-                        payload = json.dumps(wrap_chat_chunk(item), separators=(",", ":"))
+                        saw_tool_calls = saw_tool_calls or bool(
+                            (item.get("message") or {}).get("tool_calls")
+                        )
+                        payload = json.dumps(
+                            wrap_chat_chunk(item, tool_calls_seen=saw_tool_calls),
+                            separators=(",", ":"),
+                        )
                         yield f"data: {payload}\n\n".encode()
                 if pending.strip():
                     try:
+                        item = json.loads(pending)
+                        saw_tool_calls = saw_tool_calls or bool(
+                            (item.get("message") or {}).get("tool_calls")
+                        )
                         payload = json.dumps(
-                            wrap_chat_chunk(json.loads(pending)), separators=(",", ":")
+                            wrap_chat_chunk(item, tool_calls_seen=saw_tool_calls),
+                            separators=(",", ":"),
                         )
                         yield f"data: {payload}\n\n".encode()
                     except (json.JSONDecodeError, TypeError):

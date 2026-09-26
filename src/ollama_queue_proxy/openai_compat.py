@@ -102,9 +102,42 @@ def translate_chat_request(body: dict) -> dict:
     return result
 
 
+def _openai_tool_calls(tool_calls: object, *, include_index: bool) -> list[dict]:
+    """Translate Ollama native tool calls to the OpenAI Chat Completions shape."""
+    if not isinstance(tool_calls, list):
+        return []
+
+    translated: list[dict] = []
+    for position, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            continue
+
+        arguments = function.get("arguments", {})
+        if not isinstance(arguments, str):
+            try:
+                arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                arguments = json.dumps(str(arguments), ensure_ascii=False)
+
+        translated_call = {
+            "id": tool_call.get("id") or f"call_{position}",
+            "type": "function",
+            "function": {"name": function["name"], "arguments": arguments},
+        }
+        if include_index:
+            index = function.get("index", position)
+            translated_call["index"] = index if isinstance(index, int) else position
+        translated.append(translated_call)
+    return translated
+
+
 def wrap_chat_response(body: dict, model: str | None = None) -> dict:
     """Wrap one Ollama non-streaming chat response as OpenAI ChatCompletion."""
     message = body.get("message") or {}
+    tool_calls = _openai_tool_calls(message.get("tool_calls"), include_index=False)
     prompt_tokens = body.get("prompt_eval_count", 0) or 0
     completion_tokens = body.get("eval_count", 0) or 0
     return {
@@ -116,26 +149,40 @@ def wrap_chat_response(body: dict, model: str | None = None) -> dict:
             "role": message.get("role", "assistant"),
             "content": message.get("content", ""),
             **({"reasoning": message["thinking"]} if message.get("thinking") else {}),
-        }, "finish_reason": body.get("done_reason", "stop") if body.get("done", True) else None}],
+            **({"tool_calls": tool_calls} if tool_calls else {}),
+        }, "finish_reason": "tool_calls" if tool_calls else (
+            body.get("done_reason", "stop") if body.get("done", True) else None
+        )}],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                   "total_tokens": prompt_tokens + completion_tokens},
     }
 
 
-def wrap_chat_chunk(body: dict, model: str | None = None) -> dict:
+def wrap_chat_chunk(
+    body: dict, model: str | None = None, *, tool_calls_seen: bool = False
+) -> dict:
     """Convert an Ollama streaming object to an OpenAI chunk object."""
     message = body.get("message") or {}
+    tool_calls = _openai_tool_calls(message.get("tool_calls"), include_index=True)
     done = body.get("done", False)
     delta = {"role": message["role"]} if message.get("role") else {}
     if message.get("content"):
         delta["content"] = message["content"]
     if message.get("thinking"):
         delta["reasoning"] = message["thinking"]
+    if tool_calls:
+        delta["tool_calls"] = tool_calls
     return {
         "id": "chatcmpl-ollama", "object": "chat.completion.chunk", "created": 0,
         "model": model or body.get("model", ""),
-        "choices": [{"index": 0, "delta": delta,
-                     "finish_reason": (body.get("done_reason") or "stop") if done else None}],
+        "choices": [{
+            "index": 0,
+            "delta": delta,
+            "finish_reason": (
+                "tool_calls" if done and (tool_calls or tool_calls_seen)
+                else (body.get("done_reason") or "stop") if done else None
+            ),
+        }],
     }
 
 

@@ -1,9 +1,6 @@
 """Tests for the OpenAI-compat embedding translation layer (openai_compat.py)."""
 
-import pytest
-
 from ollama_queue_proxy.openai_compat import (
-    _OPENAI_COMPAT_PATHS,
     is_openai_compat_path,
     rewrite_path,
     translate_chat_request,
@@ -12,7 +9,6 @@ from ollama_queue_proxy.openai_compat import (
     wrap_error,
     wrap_response,
 )
-
 
 # ── path detection ────────────────────────────────────────────────────────────
 
@@ -85,7 +81,10 @@ def test_translate_chat_pi_content_parts_for_all_message_roles():
     assert result["messages"] == [
         {"role": "system", "content": "System rules"},
         {"role": "developer", "content": "Be concise"},
-        {"role": "user", "content": "Describe this image\n[image_url: data:image/png;base64,abc123]"},
+        {
+            "role": "user",
+            "content": "Describe this image\n[image_url: data:image/png;base64,abc123]",
+        },
     ]
 
 
@@ -128,6 +127,67 @@ def test_wrap_chat_thinking_as_openai_reasoning():
 
     chunk = wrap_chat_chunk({"model": "qwen3.8:27b", "message": {"thinking": "reason"}})
     assert chunk["choices"][0]["delta"]["reasoning"] == "reason"
+
+
+def test_wrap_chat_response_translates_native_tool_calls():
+    response = wrap_chat_response({
+        "model": "qwen3:8b",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_read",
+                "function": {
+                    "index": 0,
+                    "name": "read_file",
+                    "arguments": {"path": "/tmp/example.txt"},
+                },
+            }],
+        },
+    })
+
+    choice = response["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"] == [{
+        "id": "call_read",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"path":"/tmp/example.txt"}',
+        },
+    }]
+
+
+def test_wrap_chat_chunk_translates_tool_calls_and_preserves_terminal_reason():
+    tool_chunk = wrap_chat_chunk({
+        "model": "qwen3:8b",
+        "message": {
+            "tool_calls": [{
+                "id": "call_read",
+                "function": {
+                    "index": 3,
+                    "name": "read_file",
+                    "arguments": {"path": "/tmp/example.txt"},
+                },
+            }],
+        },
+        "done": False,
+    })
+    assert tool_chunk["choices"][0]["delta"]["tool_calls"] == [{
+        "id": "call_read",
+        "index": 3,
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "arguments": '{"path":"/tmp/example.txt"}',
+        },
+    }]
+    assert tool_chunk["choices"][0]["finish_reason"] is None
+
+    terminal_chunk = wrap_chat_chunk(
+        {"message": {}, "done": True, "done_reason": "stop"}, tool_calls_seen=True
+    )
+    assert terminal_chunk["choices"][0]["finish_reason"] == "tool_calls"
 
 
 def test_wrap_chat_chunk_and_error():
