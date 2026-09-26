@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.12] - 2026-09-26
+
+### Fixed
+- Translate native Ollama tool calls into OpenAI-compatible chat responses and SSE chunks.
+
 ## [0.4.11] - 2026-09-26
 
 ### Changed
