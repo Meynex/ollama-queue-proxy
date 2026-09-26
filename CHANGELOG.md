@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.13] - 2026-09-26
+
+### Fixed
+- Convert OpenAI tool-call history into Ollama-native assistant and tool messages.
+
 ## [0.4.12] - 2026-09-26
 
 ### Fixed

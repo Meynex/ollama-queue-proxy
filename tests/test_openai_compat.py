@@ -107,6 +107,46 @@ def test_translate_chat_preserves_string_content_and_unknown_parts():
     )
 
 
+def test_translate_chat_converts_openai_tool_history_to_ollama():
+    result = translate_chat_request({
+        "messages": [
+            {"role": "user", "content": "Read the file."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"/tmp/example.txt"}',
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_read",
+                "content": '{"contents":"example"}',
+            },
+        ],
+    })
+
+    assert result["messages"] == [
+        {"role": "user", "content": "Read the file."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "function": {
+                    "name": "read_file",
+                    "arguments": {"path": "/tmp/example.txt"},
+                },
+            }],
+        },
+        {"role": "tool", "content": '{"contents":"example"}'},
+    ]
+
+
 def test_wrap_chat_response_openai_schema_and_usage():
     result = wrap_chat_response({
         "model": "llama3", "message": {"role": "assistant", "content": "hello"},

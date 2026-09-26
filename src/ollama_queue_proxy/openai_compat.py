@@ -60,16 +60,55 @@ def _content_to_ollama_string(content: object) -> object:
     return "\n".join(rendered)
 
 
+def _ollama_tool_calls(tool_calls: object) -> list[dict]:
+    """Translate OpenAI assistant tool calls to Ollama's native message shape."""
+    if not isinstance(tool_calls, list):
+        return []
+
+    translated: list[dict] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            continue
+
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except (TypeError, ValueError):
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        translated.append({
+            "function": {"name": function["name"], "arguments": arguments},
+        })
+    return translated
+
+
+def _translate_chat_message(message: object) -> object:
+    """Convert one OpenAI chat-history message to Ollama's native format."""
+    if not isinstance(message, dict):
+        return message
+
+    translated = dict(message)
+    if "content" in translated:
+        translated["content"] = _content_to_ollama_string(translated["content"])
+    if "tool_calls" in translated:
+        translated["tool_calls"] = _ollama_tool_calls(translated["tool_calls"])
+    if translated.get("role") == "tool":
+        # Ollama associates a tool response by message order, not OpenAI's ID.
+        translated.pop("tool_call_id", None)
+    return translated
+
+
 def translate_chat_request(body: dict) -> dict:
     """Translate OpenAI chat fields while retaining Ollama-native options."""
     result = dict(body)
     messages = body.get("messages")
     if isinstance(messages, list):
-        result["messages"] = [
-            {**message, "content": _content_to_ollama_string(message.get("content"))}
-            if isinstance(message, dict) and "content" in message else message
-            for message in messages
-        ]
+        result["messages"] = [_translate_chat_message(message) for message in messages]
     # Ollama uses the same stream flag; retaining it selects NDJSON or JSON.
     result["stream"] = bool(body.get("stream", False))
     # Ollama supports native thinking while OpenAI clients commonly expose the
